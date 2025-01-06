@@ -1,0 +1,57 @@
+{
+    "commands": {
+        "draw": "即梦"
+    },
+    "params": {
+        "ratios": {
+            "1:1": {"width": 1024, "height": 1024},
+            "4:3": {"width": 1024, "height": 768},
+            "3:4": {"width": 768, "height": 1024},
+            "16:9": {"width": 1024, "height": 576},
+            "9:16": {"width": 576, "height": 1024}
+        },
+        "default_ratio": "1:1",
+        "models": {
+            "2.1": {
+                "name": "图片 2.1",
+                "model_req_key": "high_aes_general_v21_L:general_v2.1_L",
+                "description": "稳定的结构和更强的影视质感，支持生成中、英文文字",
+                "features": ["新模型", "默认场景", "人脸交换", "背景绘画", "文本到图像生成", "ETTA", "角色生成"]
+            },
+            "2.0p": {
+                "name": "图片 2.0 Pro",
+                "model_req_key": "high_aes_general_v20_L:general_v2.0_L",
+                "description": "大幅提升了多样性和真实的照片质感，开启创新与设计的视觉梦境",
+                "features": ["默认场景", "文本到图像生成", "人脸交换", "背景绘画", "限时折扣", "字节编辑", "风格参考"]
+            },
+            "2.0": {
+                "name": "图片 2.0",
+                "model_req_key": "high_aes_general_v20:general_v2.0",
+                "description": "更精准的描述词响应和多样的风格组合，模型极具想象力！",
+                "features": ["默认场景", "文本到图像生成", "人脸交换", "背景绘画", "Canny边缘检测", "深度图", "姿态估计", "风格参考", "IP保持"]
+            },
+            "xl": {
+                "name": "图片 XL Pro",
+                "model_req_key": "text2img_xl_sft",
+                "description": "增强英文生成能力和参考图可控能力，使用引号强化文字效果",
+                "features": ["默认场景", "人脸交换", "背景绘画", "Canny边缘检测", "深度图", "姿态估计", "文本到图像生成", "风格参考", "图像到图像生成"]
+            }
+        },
+        "default_model": "2.1"
+    },
+    "storage": {
+        "retention_days": 7
+    },
+    "video_api": {
+        "cookie": "抓取cookie替换",
+        "sign": "同上",
+        "msToken": "同上",
+        "a_bogus": "同上",
+        "video_params": {
+            "aspect_ratio": "16:9",
+            "fps": 24,
+            "duration_ms": 5000,
+            "video_mode": 2
+        }
+    }
+} 
