@@ -32,12 +32,14 @@ class ImageProcessor:
             
             # 获取所有图片
             pil_images = []
+            original_sizes = []
             for url in urls[:4]:  # 最多处理4张图片
                 response = requests.get(url, timeout=30)
                 if response.status_code == 200:
                     img_data = BytesIO(response.content)
                     img = Image.open(img_data)
                     pil_images.append(img)
+                    original_sizes.append(img.size)
                 else:
                     logger.error(f"[Jimeng] Failed to download image from {url}")
                     return None
@@ -46,24 +48,40 @@ class ImageProcessor:
                 logger.error("[Jimeng] No valid images to combine")
                 return None
             
+            # 计算最佳目标尺寸
+            max_width = max(size[0] for size in original_sizes)
+            max_height = max(size[1] for size in original_sizes)
+            aspect_ratio = max_width / max_height
+            
+            # 根据图片数量和比例确定目标尺寸
+            if aspect_ratio > 1.5:  # 宽屏图片
+                target_width = 1024
+                target_height = int(target_width / aspect_ratio)
+            elif aspect_ratio < 0.67:  # 竖屏图片
+                target_height = 1024
+                target_width = int(target_height * aspect_ratio)
+            else:  # 接近方形的图片
+                target_width = target_height = 512
+            
             # 等比例缩放图片
-            target_size = (512, 512)  # 目标尺寸
             resized_images = []
-            for img in pil_images:
+            for img, orig_size in zip(pil_images, original_sizes):
                 # 计算缩放比例
-                width, height = img.size
-                ratio = min(target_size[0] / width, target_size[1] / height)
+                width, height = orig_size
+                ratio = min(target_width / width, target_height / height)
                 new_size = (int(width * ratio), int(height * ratio))
                 
                 # 缩放图片
                 resized = img.resize(new_size, Image.Resampling.LANCZOS)
                 
-                # 创建白色背景
-                padded = Image.new('RGB', target_size, 'white')
+                # 创建透明背景
+                padded = Image.new('RGBA', (target_width, target_height), (255, 255, 255, 0))
                 
                 # 将缩放后的图片居中粘贴
-                x = (target_size[0] - new_size[0]) // 2
-                y = (target_size[1] - new_size[1]) // 2
+                x = (target_width - new_size[0]) // 2
+                y = (target_height - new_size[1]) // 2
+                if resized.mode == 'RGB':
+                    resized = resized.convert('RGBA')
                 padded.paste(resized, (x, y))
                 
                 resized_images.append(padded)
@@ -81,16 +99,25 @@ class ImageProcessor:
                 rows = math.ceil(num_images / cols)
             
             # 创建空白画布，添加边距
-            margin = 2  # 分割线宽度
-            canvas_width = cols * target_size[0] + (cols - 1) * margin
-            canvas_height = rows * target_size[1] + (rows - 1) * margin
+            margin = 4  # 分割线宽度
+            canvas_width = cols * target_width + (cols - 1) * margin
+            canvas_height = rows * target_height + (rows - 1) * margin
+            
+            # 使用白色背景
             canvas = Image.new('RGB', (canvas_width, canvas_height), 'white')
             
             # 粘贴图片到画布
             for idx, img in enumerate(resized_images):
-                x = (idx % cols) * (target_size[0] + margin)
-                y = (idx // cols) * (target_size[1] + margin)
-                canvas.paste(img, (x, y))
+                x = (idx % cols) * (target_width + margin)
+                y = (idx // cols) * (target_height + margin)
+                # 将RGBA图片转换为RGB并粘贴到画布上
+                if img.mode == 'RGBA':
+                    # 创建白色背景
+                    bg = Image.new('RGB', img.size, 'white')
+                    bg.paste(img, mask=img.split()[3])  # 使用alpha通道作为mask
+                    canvas.paste(bg, (x, y))
+                else:
+                    canvas.paste(img, (x, y))
             
             # 保存合并后的图片
             output_path = os.path.join(self.temp_dir, f"combined_{int(time.time())}.jpg")
