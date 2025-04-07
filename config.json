@@ -10,8 +10,14 @@
             "16:9": {"width": 1024, "height": 576},
             "9:16": {"width": 576, "height": 1024}
         },
-        "default_ratio": "1:1",
+        "default_ratio": "4:3",
         "models": {
+            "3.0": {
+                "name": "图片 3.0",
+                "model_req_key": "high_aes_general_v30l:general_v3.0_18b",
+                "description": "影视质感，文字更准，直出2k高清图",
+                "features": ["新模型", "默认场景", "人脸交换", "背景绘画", "文本到图像生成", "ETTA", "角色生成"]
+            },
             "2.1": {
                 "name": "图片 2.1",
                 "model_req_key": "high_aes_general_v21_L:general_v2.1_L",
@@ -43,15 +49,23 @@
         "retention_days": 7
     },
     "video_api": {
-        "cookie": "抓取cookie替换",
-        "sign": "同上",
-        "msToken": "同上",
-        "a_bogus": "同上",
+         "cookie": "",
+        "msToken": "",
+        "a_bogus": "",
+        "web_id": "",
         "video_params": {
             "aspect_ratio": "16:9",
             "fps": 24,
             "duration_ms": 5000,
             "video_mode": 2
         }
-    }
+    },
+    "video_ratios": {
+        "16:9": {"width": 1024, "height": 576},
+        "4:3": {"width": 1024, "height": 768},
+        "1:1": {"width": 1024, "height": 1024},
+        "3:4": {"width": 768, "height": 1024},
+        "9:16": {"width": 576, "height": 1024}
+    },
+    "default_video_ratio": "16:9"
 } 

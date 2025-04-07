@@ -99,38 +99,25 @@ class JimengPlugin(Plugin):
         # 基本命令说明
         help_text += "基本命令：\n"
         help_text += f"1. 生成图片: '{draw_command} [描述] [模型] [比例]'\n"
-        help_text += f"2. 查看原图: 'j放大 [图片ID] [序号]'\n"
-        help_text += f"3. 生成视频: '{draw_command}v [描述]'\n\n"
+        help_text += f"2. 生成视频: '{draw_command}v [描述] [比例]'\n\n"
         
-        # 支持的模型说明
-        help_text += "支持的模型：\n"
-        models = self.config.get("params", {}).get("models", {})
-        for key, model in models.items():
-            help_text += f"- {model['name']} ({key}):\n"
-            help_text += f"  {model['description']}\n"
-            help_text += f"  特性: {', '.join(model['features'])}\n\n"
+        # 支持的模型
+        help_text += "支持的模型: 2.0, 2.1, 2.0p, 3.0, xl\n\n"
         
-        # 支持的比例说明
-        help_text += "支持的比例：\n"
-        ratios = self.config.get("params", {}).get("ratios", {})
-        for ratio, config in ratios.items():
-            help_text += f"- {ratio} ({config['width']}x{config['height']})\n"
-        help_text += "\n"
+        # 支持的比例
+        help_text += "支持的比例: "
+        ratios = list(self.config.get("params", {}).get("ratios", {}).keys())
+        help_text += ", ".join(ratios)
+        help_text += "\n\n"
         
         # 使用示例
-        help_text += "使用示例：\n"
+        help_text += "示例：\n"
         help_text += f"1. {draw_command} 一只可爱的猫咪  # 使用默认模型(2.1)和比例(1:1)\n"
-        help_text += f"2. {draw_command} 一只可爱的猫咪 2.0p  # 使用图片2.0 Pro模型\n"
-        help_text += f"3. {draw_command} 一只可爱的猫咪 4:3  # 使用4:3比例\n"
-        help_text += f"4. {draw_command} 一只可爱的猫咪 2.0p 16:9  # 使用2.0 Pro模型和16:9比例\n"
-        help_text += f"5. j放大 1704067890 2  # 查看ID为1704067890的第2张原图\n"
-        help_text += f"6. {draw_command}v 现代美少女在海边  # 生成视频\n\n"
-        
-        help_text += "注意：\n"
-        help_text += "1. 模型和比例参数可以用空格、横杠、逗号分隔\n"
-        help_text += "2. 模型和比例参数顺序可以互换\n"
-        help_text += "3. 支持中文冒号和英文冒号\n"
-        help_text += "4. XL模型也可以写作xl或xlpro\n"
+        help_text += f"2. {draw_command} 一只可爱的猫咪-3.0  # 使用图片3.0模型\n"
+        help_text += f"3. {draw_command} 一只可爱的猫咪-2.0p-16:9  # 使用2.0 Pro模型和16:9比例\n"
+        help_text += f"4. j放大 1704067890 2  # 查看ID为1704067890的第2张原图\n"
+        help_text += f"5. {draw_command}v 现代美少女在海边  # 生成视频，使用默认比例\n"
+        help_text += f"6. {draw_command}v 现代美少女在海边-16:9  # 生成视频，使用16:9比例\n"
         
         return help_text
 
@@ -150,13 +137,30 @@ class JimengPlugin(Plugin):
             text_reply = Reply(ReplyType.TEXT, text_content)
             self.send_reply(e_context, text_reply)
 
-    def generate_video(self, prompt):
-        """生成视频"""
+    def generate_video(self, prompt, ratio=None):
+        """生成视频
+        Args:
+            prompt: 视频提示词
+            ratio: 视频比例，如"16:9"，默认为配置中的默认比例
+        Returns:
+            tuple: (success, result)
+        """
         try:
             # 检查配置是否完整
             if not self.config.get("video_api", {}).get("cookie") or not self.config.get("video_api", {}).get("sign"):
                 return False, "请先在config.json中配置video_api的cookie和sign"
 
+            # 获取视频比例配置
+            if not ratio:
+                ratio = self.config.get("default_video_ratio", "16:9")
+                
+            # 获取比例的宽高配置
+            ratio_config = self.config.get("video_ratios", {}).get(ratio)
+            if not ratio_config:
+                # 如果未找到比例配置，使用默认16:9
+                ratio = "16:9"
+                ratio_config = {"width": 1024, "height": 576}
+            
             # 生成唯一的submit_id
             submit_id = str(uuid.uuid4())
             
@@ -166,7 +170,7 @@ class JimengPlugin(Plugin):
                 "task_extra": "{\"promptSource\":\"custom\",\"originSubmitId\":\"0340110f-5a94-42a9-b737-f4518f90361f\",\"isDefaultSeed\":1,\"originTemplateId\":\"\",\"imageNameMapping\":{},\"isUseAiGenPrompt\":false,\"batchNumber\":1}",
                 "http_common_info": {"aid": 513695},
                 "input": {
-                    "video_aspect_ratio": "16:9",
+                    "video_aspect_ratio": ratio,
                     "seed": 2934141961,
                     "video_gen_inputs": [
                         {
@@ -270,41 +274,101 @@ class JimengPlugin(Plugin):
     def _parse_command(self, content):
         """解析命令参数
         Args:
-            content: 命令内容，如 "一只猫 2.1 4:3"
+            content: 命令内容，如 "一只猫 2.1 4:3" 或 "一只猫-2.1-4:3"
         Returns:
             tuple: (prompt, model, ratio)
         """
-        parts = content.split()
-        prompt = parts[0]
+        # 设置默认值
         model = self.config.get("params", {}).get("default_model", "2.1")
         ratio = self.config.get("params", {}).get("default_ratio", "1:1")
         
-        # 解析剩余参数
-        for part in parts[1:]:
-            part = part.lower().replace("：", ":")  # 统一处理中英文冒号
-            
-            # 检查是否是模型参数
-            models = self.config.get("params", {}).get("models", {})
-            if part in models or part.replace(".", "") in ["20", "21", "20p", "xlpro"]:
-                # 处理简写
-                if part == "20":
-                    model = "2.0"
-                elif part == "21":
-                    model = "2.1"
-                elif part == "20p":
-                    model = "2.0p"
-                elif part == "xlpro":
-                    model = "xl"
+        # 使用"-"分割提示词、模型和比例
+        if "-" in content:
+            parts = content.split("-")
+            # 取除最后两个部分外的所有内容作为提示词
+            if len(parts) >= 3:
+                # 可能最后两个是模型和比例
+                possible_model = parts[-2].strip().lower()
+                possible_ratio = parts[-1].strip().lower()
+                
+                # 检查是否是有效的模型或比例
+                valid_models = list(self.config.get("params", {}).get("models", {}).keys()) + ["20", "21", "20p", "30", "3.0", "xlpro"]
+                valid_ratios = list(self.config.get("params", {}).get("ratios", {}).keys())
+                
+                is_model = False
+                is_ratio = False
+                
+                # 检查possible_model是否为模型
+                if possible_model in valid_models or possible_model.replace(".", "") in ["20", "21", "20p", "30", "xlpro"]:
+                    is_model = True
+                
+                # 检查possible_ratio是否为比例
+                if ":" in possible_ratio and possible_ratio in valid_ratios:
+                    is_ratio = True
+                
+                if is_model and is_ratio:
+                    # 如果最后两个部分是模型和比例，则取除这两个部分之外的所有内容作为提示词
+                    prompt = "-".join(parts[:-2])
+                    
+                    # 处理模型简写
+                    if possible_model == "20":
+                        model = "2.0"
+                    elif possible_model == "21":
+                        model = "2.1"
+                    elif possible_model == "20p":
+                        model = "2.0p"
+                    elif possible_model == "30":
+                        model = "3.0"
+                    elif possible_model == "xlpro":
+                        model = "xl"
+                    else:
+                        model = possible_model
+                    
+                    ratio = possible_ratio
                 else:
-                    model = part
-                continue
+                    # 如果最后两个部分不全是模型和比例，则取所有内容作为提示词
+                    prompt = content
+            else:
+                # 如果parts少于3个，则可能没有同时指定模型和比例，整个作为提示词
+                prompt = content
+        else:
+            # 使用空格分割
+            parts = content.split()
+            prompt = parts[0] if parts else content
+            
+            # 解析剩余参数
+            for part in parts[1:]:
+                part = part.lower().replace("：", ":")  # 统一处理中英文冒号
                 
-            # 检查是否是比例参数
-            ratios = self.config.get("params", {}).get("ratios", {})
-            if part in ratios:
-                ratio = part
-                continue
+                # 检查是否是模型参数
+                models = self.config.get("params", {}).get("models", {})
+                if part in models or part.replace(".", "") in ["20", "21", "20p", "30", "xlpro"]:
+                    # 处理简写
+                    if part == "20":
+                        model = "2.0"
+                    elif part == "21":
+                        model = "2.1"
+                    elif part == "20p":
+                        model = "2.0p"
+                    elif part == "30":
+                        model = "3.0"
+                    elif part == "xlpro":
+                        model = "xl"
+                    else:
+                        model = part
+                    continue
+                    
+                # 检查是否是比例参数
+                ratios = self.config.get("params", {}).get("ratios", {})
+                if part in ratios:
+                    ratio = part
+                    continue
+        
+        # 如果最终提示词为空，使用整个内容作为提示词
+        if not prompt or prompt.strip() == "":
+            prompt = content
                 
+        logger.debug(f"[Jimeng] Parsed command: prompt='{prompt}', model='{model}', ratio='{ratio}'")
         return prompt, model, ratio
 
     def on_handle_context(self, e_context: EventContext):
@@ -351,8 +415,42 @@ class JimengPlugin(Plugin):
             wait_reply = Reply(ReplyType.TEXT, "即梦正在生成视频中，请稍后......")
             e_context["channel"].send(wait_reply, e_context["context"])
             
-            prompt = content[1:].strip()
-            success, result = self.generate_video(prompt)
+            # 去除前缀v或V，获取提示词和可能的比例参数
+            video_content = content[1:].strip()
+            
+            # 解析视频命令参数，支持比例参数
+            prompt = video_content
+            ratio = None
+            
+            # 检查是否包含比例参数（使用"-"分隔或空格分隔）
+            if "-" in video_content:
+                parts = video_content.split("-")
+                if len(parts) >= 2:
+                    last_part = parts[-1].strip()
+                    valid_ratios = list(self.config.get("video_ratios", {}).keys())
+                    
+                    # 检查最后一部分是否是有效比例
+                    if ":" in last_part and last_part in valid_ratios:
+                        ratio = last_part
+                        # 其余部分作为提示词
+                        prompt = "-".join(parts[:-1])
+            else:
+                # 使用空格分割
+                parts = video_content.split()
+                if len(parts) >= 2:
+                    last_part = parts[-1].strip()
+                    valid_ratios = list(self.config.get("video_ratios", {}).keys())
+                    
+                    # 检查最后一部分是否是有效比例
+                    if ":" in last_part and last_part in valid_ratios:
+                        ratio = last_part
+                        # 其余部分作为提示词
+                        prompt = " ".join(parts[:-1])
+            
+            # 生成视频
+            logger.debug(f"[Jimeng] Generating video with prompt: '{prompt}', ratio: {ratio}")
+            success, result = self.generate_video(prompt, ratio)
+            
             if success:
                 e_context['reply'] = Reply(ReplyType.VIDEO_URL, result)
             else:
