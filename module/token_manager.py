@@ -1,11 +1,7 @@
-import json
-import time
-import uuid
-import requests
-import re
-import hashlib
 import random
-from common.log import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TokenManager:
     def __init__(self, config):

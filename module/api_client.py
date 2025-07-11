@@ -5,17 +5,17 @@ import hashlib
 import requests
 import random
 import os
-from common.log import logger
-from .image_processor import ImageProcessor
+import logging
 from .image_storage import ImageStorage
 
+logger = logging.getLogger(__name__)
 class ApiClient:
     def __init__(self, token_manager, config):
         self.token_manager = token_manager
         self.config = config
         self.temp_files = []
         self.base_url = "https://jimeng.jianying.com"
-        self.aid = "513695"
+        self.aid = 513695
         self.app_version = "5.8.0"
         
         # 初始化存储路径
@@ -28,7 +28,6 @@ class ApiClient:
             os.makedirs(temp_dir)
             
         # 初始化图片处理器和存储器
-        self.image_processor = ImageProcessor(temp_dir)
         self.image_storage = ImageStorage(
             os.path.join(storage_dir, "images.db"),
             retention_days=config.get("storage", {}).get("retention_days", 7)
@@ -39,7 +38,7 @@ class ApiClient:
             'accept': 'application/json, text/plain, */*',
             'accept-language': 'zh-CN,zh;q=0.9',
             'app-sdk-version': '48.0.0',
-            'appid': self.aid,
+            'appid': str(self.aid),
             'appvr': '5.8.0',
             'content-type': 'application/json',
             'cookie': self.config.get("video_api", {}).get("cookie", ""),
@@ -49,7 +48,7 @@ class ApiClient:
             'origin': 'https://jimeng.jianying.com',
             'pf': '7',
             'priority': 'u=1, i',
-            'referer': 'https://jimeng.jianying.com/ai-tool/image/generate',
+            'referer': 'https://jimeng.jianying.com/ai-tool/generate?type=image',
             'sec-ch-ua': '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"',
@@ -96,43 +95,36 @@ class ApiClient:
             logger.error(f"[Jimeng] Request failed: {e}")
             return None
 
-    def _get_generated_images(self, history_id):
+    def get_generated_images(self, submit_id):
         """获取生成的图片"""
         try:
             url = f"{self.base_url}/mweb/v1/get_history_by_ids"
             
             params = {
-                "aid": self.aid,
+                "aid": str(self.aid),
                 "device_platform": "web",
-                "region": "CN",
+                "region": "cn",
+                "aigc_features": "aigc_to_image",
+                "da_version": "3.2.6",
                 "web_id": self.token_manager.get_web_id()
             }
             
             data = {
-                "history_ids": [history_id],
-                "image_info": {
-                    "width": 2048,
-                    "height": 2048,
-                    "format": "webp",
-                    "image_scene_list": [
-                        {"scene": "normal", "width": 2400, "height": 2400, "uniq_key": "2400", "format": "webp"},
-                        {"scene": "normal", "width": 1080, "height": 1080, "uniq_key": "1080", "format": "webp"}
-                    ]
-                },
-                "http_common_info": {"aid": self.aid}
+                "submit_ids": [submit_id]
             }
             
             # 更新device-time
             self.headers['device-time'] = str(int(time.time()))
             
-            logger.debug(f"[Jimeng] Requesting generated images for history_id: {history_id}")
+            logger.debug(f"[Jimeng] Requesting generated images for history_id: {submit_id}")
             response = requests.post(url, headers=self.headers, params=params, json=data)
             result = response.json()
+            # print(f"result: {json.dumps(result, ensure_ascii=False)}")
             
             if result.get('ret') == '0':
-                history_data = result.get('data', {}).get(history_id, {})
+                history_data = result.get('data', {}).get(submit_id, {})
                 if not history_data:
-                    logger.error(f"[Jimeng] No history data found for ID: {history_id}")
+                    logger.error(f"[Jimeng] No history data found for ID: {submit_id}")
                     return None
                     
                 status = history_data.get('status')
@@ -156,7 +148,7 @@ class ApiClient:
                         cover_url_map = common_attr.get('cover_url_map', {})
                         if cover_url_map:
                             # 按优先级尝试不同尺寸
-                            for size in ['2400', '1080', '900', '720']:
+                            for size in ['2400', '1080', '900', '720', '480', '360']:
                                 if size in cover_url_map:
                                     image_urls.append(cover_url_map[size])
                                     break
@@ -173,7 +165,7 @@ class ApiClient:
                     return None
                 else:
                     logger.error(f"[Jimeng] Unexpected status: {status}")
-                    return None
+                    return []
             else:
                 logger.error(f"[Jimeng] Failed to get generated images: {result}")
                 return None
@@ -291,7 +283,7 @@ class ApiClient:
             "3:4": 3,
             "1:1": 1,
             "16:9": 16,
-            "9:16": 9
+            "9:16": 5
         }
         return ratio_map.get(ratio, 1)
 
@@ -306,7 +298,7 @@ class ApiClient:
             'accept': 'application/json, text/plain, */*',
             'accept-language': 'zh-CN,zh;q=0.9',
             'app-sdk-version': '48.0.0',
-            'appid': self.aid,
+            'appid': str(self.aid),
             'appvr': self.app_version,
             'content-type': 'application/json',
             'cookie': self.config.get("video_api", {}).get("cookie", ""),
@@ -338,7 +330,7 @@ class ApiClient:
         }
         return {
             "babi_param": json.dumps(babi_param, ensure_ascii=False),
-            "aid": self.aid,
+            "aid": str(self.aid),
             "device_platform": "web",
             "region": "CN",
             "web_id": self.token_manager.get_web_id(),
@@ -346,14 +338,14 @@ class ApiClient:
             "a_bogus": self.config.get("video_api", {}).get("a_bogus", "")
         }
 
-    def _get_ratio_dimensions(self, ratio):
+    def _get_ratio_dimensions(self, ratio_type, ratio):
         """获取指定比例的图片尺寸
         Args:
             ratio: 图片比例，如 "1:1", "16:9", "9:16" 等
         Returns:
             tuple: (width, height)
         """
-        ratios = self.config.get("params", {}).get("ratios", {})
+        ratios = self.config.get("params", {}).get(ratio_type, {})
         ratio_config = ratios.get(ratio)
         
         if not ratio_config:
@@ -390,7 +382,7 @@ class ApiClient:
             
         return model
 
-    def generate_image(self, prompt, model="2.1", ratio="1:1"):
+    def generate_image(self, prompt, model="3.1", ratio="9:16"):
         """生成图片
         Args:
             prompt: 提示词
@@ -402,10 +394,6 @@ class ApiClient:
         try:
             # 获取实际的模型key
             model = self._get_model_key(model)
-            
-            # 获取图片尺寸
-            width, height = self._get_ratio_dimensions(ratio)
-            
             # 生成随机种子
             seed = random.randint(1, 999999999)
             
@@ -415,8 +403,10 @@ class ApiClient:
             # 获取模型配置
             models = self.config.get("params", {}).get("models", {})
             model_info = models.get(model, {})
-            model_req_key = model_info.get("model_req_key", f"high_aes_general_v20:general_{model}")
-            
+            model_req_key = model_info.get("model_req_key", f"high_aes_general_v30l_art_fangzhou:general_v3.0_18b")
+            ratio_type = model_info.get("ratios", "v3_ratios")
+            # 获取图片尺寸
+            width, height = self._get_ratio_dimensions(ratio_type, ratio)
             # 准备babi_param
             babi_param = {
                 "scenario": "image_video_generation",
@@ -432,24 +422,28 @@ class ApiClient:
             
             # 准备metrics_extra
             metrics_extra = {
-                "templateId": "",
-                "generateCount": 1,
                 "promptSource": "custom",
-                "templateSource": "",
-                "lastRequestId": "",
-                "originRequestId": "",
-                "originSubmitId": "",
-                "isDefaultSeed": 1,
-                "originTemplateId": "",
-                "imageNameMapping": {},
-                "isUseAiGenPrompt": False,
-                "batchNumber": 1
+                "generateCount": 1,
+                "enterFrom": "click",
+                "generateId": submit_id,
+                "isRegenerate": False,
+                # 以下字段为空
+                # "templateId": "",
+                # "templateSource": "",
+                # "lastRequestId": "",
+                # "originRequestId": "",
+                # "originSubmitId": "",
+                # "isDefaultSeed": 1,
+                # "originTemplateId": "",
+                # "imageNameMapping": {},
+                # "isUseAiGenPrompt": False,
+                # "batchNumber": 1,
             }
             
             data = {
                 "extend": {
                     "root_model": model_req_key,
-                    "template_id": ""
+                    # "template_id": ""
                 },
                 "submit_id": submit_id,
                 "metrics_extra": json.dumps(metrics_extra),
@@ -459,20 +453,30 @@ class ApiClient:
                     "min_version": "3.0.2",
                     "min_features": [],
                     "is_from_tsn": True,
-                    "version": "3.0.9",
+                    "version": "3.2.6",
                     "main_component_id": component_id,
                     "component_list": [{
                         "type": "image_base_component",
                         "id": component_id,
                         "min_version": "3.0.2",
-                        "generate_type": "generate",
                         "aigc_mode": "workbench",
+                        "metadata": {
+                            "type": "",
+                            "id": str(uuid.uuid4()),
+                            "created_platform": 3,
+                            "created_platform_version": "",
+                            "created_time_in_ms": str(int(time.time() * 1000)),
+                            "created_did": ""
+                        },
+                        "generate_type": "generate",
                         "abilities": {
                             "type": "",
                             "id": str(uuid.uuid4()),
                             "generate": {
                                 "type": "",
                                 "id": str(uuid.uuid4()),
+                                "min_version": "3.2.5",
+                                "min_features": [],
                                 "core_param": {
                                     "type": "",
                                     "id": str(uuid.uuid4()),
@@ -481,18 +485,28 @@ class ApiClient:
                                     "negative_prompt": "",
                                     "seed": seed,
                                     "sample_strength": 0.5,
-                                    "image_ratio": 3 if ratio == "9:16" else self._get_ratio_value(ratio),
+                                    "image_ratio": 5 if ratio == "9:16" else self._get_ratio_value(ratio),
                                     "large_image_info": {
                                         "type": "",
                                         "id": str(uuid.uuid4()),
                                         "height": height,
-                                        "width": width
+                                        "width": width,
+                                        "resolution_type": "1k"
                                     }
                                 },
-                                "history_option": {
-                                    "type": "",
-                                    "id": str(uuid.uuid4())
-                                }
+                                # "ability_list": [], # 参考图片
+                                # "prompt_placeholder_info_list": [
+                                #     {
+                                #         "type": "",
+                                #         "id": str(uuid.uuid4()),
+                                #         "ability_index": 0
+                                #     }
+                                # ],
+                                # "postedit_param": {
+                                #     "type": "",
+                                #     "id": str(uuid.uuid4()),
+                                #     "generate_type": 0
+                                # }
                             }
                         }
                     }]
@@ -502,7 +516,7 @@ class ApiClient:
             
             params = {
                 "babi_param": json.dumps(babi_param),
-                "aid": self.aid,
+                "aid": str(self.aid),
                 "device_platform": "web",
                 "region": "CN",
                 "web_id": self.token_manager.get_web_id()
@@ -510,27 +524,19 @@ class ApiClient:
             
             # 发送请求
             logger.debug(f"[Jimeng] Generating image with prompt: {prompt}, model: {model}, ratio: {ratio}")
+            # print(json.dumps(data, ensure_ascii=False))
             response = self._send_request("POST", url, params=params, json=data)
-            
+
             if not response or response.get('ret') != '0':
                 logger.error(f"[Jimeng] Failed to generate image: {response}")
                 return None
                 
             # 获取history_id
-            history_id = response.get('data', {}).get('aigc_data', {}).get('history_record_id')
-            if not history_id:
-                logger.error("[Jimeng] No history_id in response")
-                return None
-                
-            # 等待图片生成完成
-            for _ in range(30):  # 最多等待30次
-                time.sleep(2)  # 每次等待2秒
-                image_urls = self._get_generated_images(history_id)
-                if image_urls:
-                    return {"urls": image_urls}
-                    
-            logger.error("[Jimeng] Image generation timeout")
-            return None
+            submit_id = response.get('data', {}).get('aigc_data', {}).get('submit_id')
+            if not submit_id:
+                logger.error("[Jimeng] No submit_id in response")
+                return submit_id
+            return submit_id
             
         except Exception as e:
             logger.error(f"[Jimeng] Error generating image: {e}")

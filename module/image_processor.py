@@ -1,11 +1,12 @@
 import os
-import io
 import time
 import requests
 from PIL import Image
-from common.log import logger
 from io import BytesIO
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ImageProcessor:
     def __init__(self, temp_dir):
@@ -18,6 +19,16 @@ class ImageProcessor:
         """确保临时目录存在"""
         if not os.path.exists(self.temp_dir):
             os.makedirs(self.temp_dir)
+
+    def download_image(self, prefix, urls):
+        self.ensure_temp_dir()
+        for idx, url in enumerate(urls):
+            response = requests.get(url, timeout=30)
+            if response.status_code == 200:
+                img_data = BytesIO(response.content)
+                img = Image.open(img_data)
+                img.save(os.path.join(self.temp_dir, f"{prefix}_{idx}.jpeg"))
+        return None
 
     def combine_images(self, urls):
         """将多张图片合并为一张2x2的图片

@@ -1,537 +1,709 @@
 import json
 import os
 import time
-import uuid
-import base64
-import requests
-from bridge.context import ContextType
-from bridge.reply import Reply, ReplyType
-from plugins import Plugin, Event, EventAction, EventContext, register
-from common.log import logger
-from .module.token_manager import TokenManager
-from .module.api_client import ApiClient
-from .module.image_storage import ImageStorage
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
+from enum import Enum
+import logging
+import azure.cognitiveservices.speech as speechsdk
+# 移除并发处理相关导入，因为接口不支持并发调用
 
-@register(
-    name="Jimeng",
-    desc="即梦AI绘画和视频生成插件",
-    version="1.0",
-    author="lanvent",
-    desire_priority=0
+from module.token_manager import TokenManager
+from module.api_client import ApiClient
+from module.image_storage import ImageStorage
+from module.image_processor import ImageProcessor
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# 配置日志格式和处理器
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('logs/jimeng.log', encoding='utf-8')
+    ]
 )
-class JimengPlugin(Plugin):
-    def __init__(self):
-        super().__init__()
-        self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
-        self.config = self._load_config()
-        
-        # 获取数据保留天数配置
-        retention_days = self.config.get("storage", {}).get("retention_days", 7)
-        
-        # 初始化存储路径
-        storage_dir = os.path.join(os.path.dirname(__file__), "storage")
-        if not os.path.exists(storage_dir):
-            os.makedirs(storage_dir)
-            
-        temp_dir = os.path.join(os.path.dirname(__file__), "temp")
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-        
-        # 初始化各个模块
-        self.image_storage = ImageStorage(
-            os.path.join(storage_dir, "images.db"),
-            retention_days=retention_days
-        )
-        self.token_manager = TokenManager(self.config)
-        self.api_client = ApiClient(self.token_manager, self.config)
-        
-        # 初始化图片处理器
-        from .module.image_processor import ImageProcessor
-        self.image_processor = ImageProcessor(temp_dir)
-        
-        # 初始化视频生成API相关配置
-        self.video_api_headers = {
-            'accept': 'application/json, text/plain, */*',
-            'accept-language': 'zh-CN,zh;q=0.9',
-            'app-sdk-version': '48.0.0',
-            'appid': '513695',
-            'appvr': '5.8.0',
-            'content-type': 'application/json',
-            'cookie': self.config.get("video_api", {}).get("cookie", ""),
-            'device-time': str(int(time.time())),
-            'lan': 'zh-Hans',
-            'loc': 'cn',
-            'origin': 'https://jimeng.jianying.com',
-            'pf': '7',
-            'priority': 'u=1, i',
-            'referer': 'https://jimeng.jianying.com/ai-tool/video/generate',
-            'sec-ch-ua': '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'sign': self.config.get("video_api", {}).get("sign", ""),
-            'sign-ver': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
-        }
-        self.video_api_base = "https://jimeng.jianying.com/mweb/v1"
-        
-        logger.info(f"[Jimeng] plugin initialized with {retention_days} days data retention")
 
-    def _load_config(self):
+logger = logging.getLogger(__name__)
+
+# 常量定义
+class TaskStatus(Enum):
+    """任务状态枚举"""
+    ALL = 0
+    PENDING = 20
+    COMPLETED = 50
+    FAILED = 60
+
+class ModelType(Enum):
+    """模型类型枚举"""
+    V2_1 = "2.1"
+    V2_0 = "2.0"
+    V2_0_PRO = "2.0p"
+    V3_0 = "3.0"
+    V3_1 = "3.1"
+
+class RatioType(Enum):
+    """比例类型枚举"""
+    SQUARE = "1:1"
+    PORTRAIT = "9:16"
+    LANDSCAPE = "16:9"
+    WIDE = "21:9"
+
+# 配置数据类
+@dataclass
+class GenerationConfig:
+    """生成配置"""
+    model: str = "3.1"
+    ratio: str = "9:16"
+    max_retries: int = 3
+    retry_delay: int = 2
+    timeout: int = 30
+
+@dataclass
+class ApiConfig:
+    """API配置"""
+    base_url: str = "https://jimeng.jianying.com"
+    aid: int = 513695
+    app_version: str = "5.8.0"
+    request_delay: float = 1.0  # 请求间隔（秒），防止API限流
+
+class ConfigManager:
+    """配置管理器"""
+    
+    def __init__(self, config_path: Optional[str] = None):
+        if config_path is None:
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        
+        self.config_path = config_path
+        self.config = self._load_config()
+        self._validate_config()
+    
+    def _load_config(self) -> Dict[str, Any]:
         """加载配置文件"""
         try:
-            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            with open(self.config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+                logger.info(f"[ConfigManager] 配置文件加载成功: {self.config_path}")
+                return config
+        except FileNotFoundError:
+            logger.error(f"[ConfigManager] 配置文件不存在: {self.config_path}")
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f"[ConfigManager] 配置文件格式错误: {e}")
+            return {}
+        except Exception as e:
+            logger.error(f"[ConfigManager] 加载配置文件失败: {e}")
+            return {}
+    
+    def _validate_config(self) -> None:
+        """验证配置文件"""
+        required_fields = ["video_api.cookie", "video_api.sign"]
+        missing_fields = []
+        
+        for field in required_fields:
+            keys = field.split(".")
+            value = self.config
+            try:
+                for key in keys:
+                    value = value[key]
+                if not value:
+                    missing_fields.append(field)
+            except (KeyError, TypeError):
+                missing_fields.append(field)
+        
+        if missing_fields:
+            logger.warning(f"[ConfigManager] 缺少必要配置项: {missing_fields}")
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """获取配置值"""
+        keys = key.split(".")
+        value = self.config
+        try:
+            for k in keys:
+                value = value[k]
+            return value
+        except (KeyError, TypeError):
+            return default
+    
+    def get_generation_config(self) -> GenerationConfig:
+        """获取生成配置"""
+        return GenerationConfig(
+            model=self.get("params.default_model", "3.1"),
+            ratio=self.get("params.default_ratio", "9:16"),
+            max_retries=self.get("generation.max_retries", 3),
+            retry_delay=self.get("generation.retry_delay", 2),
+            timeout=self.get("generation.timeout", 30),
+        )
+    
+    def get_api_config(self) -> ApiConfig:
+        """获取API配置"""
+        return ApiConfig(
+            base_url=self.get("api.base_url", "https://jimeng.jianying.com"),
+            aid=self.get("api.aid", 513695),
+            app_version=self.get("api.app_version", "5.8.0"),
+            request_delay=self.get("api.request_delay", 1.0)
+        )
+
+class ImageGenerationTask:
+    """图片生成任务"""
+    
+    def __init__(self, task_id: str, prompt: str, model: str, ratio: str, metadata: Optional[Dict[str, Any]] = None):
+        self.task_id = task_id
+        self.prompt = prompt
+        self.model = model
+        self.ratio = ratio
+        self.metadata = metadata or {}
+        self.status = TaskStatus.PENDING
+        self.created_at = time.time()
+        self.completed_at = None
+        self.result = None
+        self.error = None
+    
+    def mark_completed(self, result: Any) -> None:
+        """标记任务完成"""
+        self.status = TaskStatus.COMPLETED
+        self.completed_at = time.time()
+        self.result = result
+    
+    def mark_failed(self, error: str) -> None:
+        """标记任务失败"""
+        self.status = TaskStatus.FAILED
+        self.completed_at = time.time()
+        self.error = error
+    
+    def get_duration(self) -> float:
+        """获取任务持续时间"""
+        if self.completed_at:
+            return self.completed_at - self.created_at
+        return time.time() - self.created_at
+
+class BatchProcessor:
+    """批处理器 - 顺序处理（因为接口不支持并发调用）"""
+    
+    def __init__(self, request_delay: float = 1.0):
+        """初始化批处理器
+        
+        Args:
+            request_delay: 请求间隔时间（秒），防止API限流
+        """
+        self.request_delay = request_delay
+        self.tasks: List[ImageGenerationTask] = []
+    
+    def add_task(self, task: ImageGenerationTask) -> None:
+        """添加任务"""
+        self.tasks.append(task)
+    
+    def process_batch(self, generator_func, *args, **kwargs) -> List[ImageGenerationTask]:
+        """批量处理任务（顺序处理）"""
+        if not self.tasks:
+            return []
+        
+        logger.info(f"[BatchProcessor] 开始顺序处理 {len(self.tasks)} 个任务")
+        
+        completed_tasks = []
+        for i, task in enumerate(self.tasks):
+            try:
+                logger.info(f"[BatchProcessor] 处理任务 {i+1}/{len(self.tasks)}: {task.task_id}")
+                
+                # 调用生成函数
+                result = generator_func(task, *args, **kwargs)
+                
+                if result:
+                    task.mark_completed(result)
+                    logger.info(f"[BatchProcessor] 任务 {task.task_id} 完成，耗时 {task.get_duration():.2f}s")
+                else:
+                    task.mark_failed("生成失败")
+                    logger.error(f"[BatchProcessor] 任务 {task.task_id} 失败")
+                
+            except Exception as e:
+                task.mark_failed(str(e))
+                logger.error(f"[BatchProcessor] 任务 {task.task_id} 异常: {e}")
+            
+            completed_tasks.append(task)
+            
+            # 添加请求间隔（除了最后一个任务）
+            if i < len(self.tasks) - 1:
+                logger.debug(f"[BatchProcessor] 等待 {self.request_delay} 秒...")
+                time.sleep(self.request_delay)
+        
+        # 清空任务列表
+        self.tasks.clear()
+        return completed_tasks
+    
+    def close(self) -> None:
+        """清理资源"""
+        self.tasks.clear()
+        logger.debug("[BatchProcessor] 资源已清理")
+
+class JimengPlugin:
+    """即梦插件主类"""
+    
+    def __init__(self, config_path: Optional[str] = None):
+        # 初始化配置管理器
+        self.config_manager = ConfigManager(config_path)
+        self.generation_config = self.config_manager.get_generation_config()
+        self.api_config = self.config_manager.get_api_config()
+        
+        # 初始化目录
+        self._init_directories()
+        
+        # 初始化组件
+        self._init_components()
+        
+        # 初始化批处理器（顺序处理，添加请求间隔防止限流）
+        request_delay = self.config_manager.get("api.request_delay", 1.0)
+        self.batch_processor = BatchProcessor(request_delay=request_delay)
+        
+        logger.info(f"[JimengPlugin] 插件初始化完成，数据保留天数: {self.config_manager.get('storage.retention_days', 7)}")
+    
+    def _init_directories(self) -> None:
+        """初始化目录结构"""
+        base_dir = os.path.dirname(__file__)
+        
+        # 创建必要目录
+        directories = [
+            os.path.join(base_dir, "storage"),
+            os.path.join(base_dir, "temp"),
+            os.path.join(base_dir, "logs")
+        ]
+        
+        for directory in directories:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+                logger.debug(f"[JimengPlugin] 创建目录: {directory}")
+    
+    def _init_components(self) -> None:
+        """初始化组件"""
+        base_dir = os.path.dirname(__file__)
+        
+        # 获取保留天数
+        retention_days = self.config_manager.get("storage.retention_days", 7)
+        
+        # 初始化存储组件
+        self.image_storage = ImageStorage(
+            os.path.join(base_dir, "storage", "images.db"),
+            retention_days=retention_days
+        )
+        
+        # 初始化图片处理器
+        self.image_processor = ImageProcessor(
+            os.path.join(base_dir, "downloads")
+        )
+        
+        # 初始化Token管理器
+        self.token_manager = TokenManager(self.config_manager.config)
+        
+        # 初始化API客户端
+        self.api_client = ApiClient(self.token_manager, self.config_manager.config)
+    
+    def generate_image(self, prompt: str, model: Optional[str] = None, ratio: Optional[str] = None) -> Optional[str]:
+        """生成单张图片
+        
+        Args:
+            prompt: 图片提示词
+            model: 模型版本，默认使用配置中的默认模型
+            ratio: 图片比例，默认使用配置中的默认比例
+            
+        Returns:
+            Optional[str]: 成功时返回submit_id，失败时返回None
+        """
+        # 使用配置中的默认值
+        model = model or self.generation_config.model
+        ratio = ratio or self.generation_config.ratio
+        
+        # 验证参数
+        if not prompt or not prompt.strip():
+            logger.error("[JimengPlugin] 提示词不能为空")
+            return None
+        
+        # 检查配置是否完整
+        if not self._validate_api_config():
+            return None
+        
+        # 重试机制
+        for attempt in range(self.generation_config.max_retries):
+            try:
+                submit_id = self.api_client.generate_image(prompt, model, ratio)
+                if submit_id:
+                    # 存储图片信息
+                    self.image_storage.store_image(
+                        submit_id,
+                        metadata={
+                            "prompt": prompt,
+                            "model": model,
+                            "ratio": ratio,
+                            "type": "generate",
+                            "attempt": attempt + 1
+                        }
+                    )
+                    logger.info(f"[JimengPlugin] 图片生成成功，submit_id: {submit_id}")
+                    return submit_id
+                else:
+                    logger.warning(f"[JimengPlugin] 图片生成失败，第 {attempt + 1} 次尝试")
+                    
+            except Exception as e:
+                logger.error(f"[JimengPlugin] 图片生成异常 (第 {attempt + 1} 次): {e}")
+            
+            # 等待重试
+            if attempt < self.generation_config.max_retries - 1:
+                time.sleep(self.generation_config.retry_delay)
+        
+        logger.error(f"[JimengPlugin] 图片生成失败，已重试 {self.generation_config.max_retries} 次")
+        return None
+    
+    def generate_images_batch(self, prompts: List[str], model: Optional[str] = None, ratio: Optional[str] = None) -> List[ImageGenerationTask]:
+        """批量生成图片
+        
+        Args:
+            prompts: 提示词列表
+            model: 模型版本
+            ratio: 图片比例
+            
+        Returns:
+            List[ImageGenerationTask]: 任务列表
+        """
+        if not prompts:
+            logger.warning("[JimengPlugin] 没有提供提示词")
+            return []
+        
+        # 使用配置中的默认值
+        model = model or self.generation_config.model
+        ratio = ratio or self.generation_config.ratio
+        
+        # 创建任务
+        for i, prompt in enumerate(prompts):
+            task_id = f"batch_{int(time.time())}_{i}"
+            task = ImageGenerationTask(
+                task_id=task_id,
+                prompt=prompt,
+                model=model,
+                ratio=ratio,
+                metadata={"batch_index": i}
+            )
+            self.batch_processor.add_task(task)
+        
+        # 批量处理
+        completed_tasks = self.batch_processor.process_batch(
+            self._generate_single_task
+        )
+        
+        return completed_tasks
+    
+    def _generate_single_task(self, task: ImageGenerationTask) -> Optional[str]:
+        """处理单个生成任务"""
+        try:
+            submit_id = self.generate_image(task.prompt, task.model, task.ratio)
+            return submit_id
+        except Exception as e:
+            logger.error(f"[JimengPlugin] 任务 {task.task_id} 处理失败: {e}")
+            return None
+    
+    def _validate_api_config(self) -> bool:
+        """验证API配置"""
+        cookie = self.config_manager.get("video_api.cookie")
+        sign = self.config_manager.get("video_api.sign")
+        
+        if not cookie or not sign:
+            logger.error("[JimengPlugin] 请先在config.json中配置video_api的cookie和sign")
+            return False
+        
+        return True
+    
+    def wait_for_completion(self, submit_ids: List[str], timeout: int = 3600) -> Dict[str, List[str]]:
+        """等待图片生成完成
+        
+        Args:
+            submit_ids: 任务ID列表
+            timeout: 超时时间（秒）
+            
+        Returns:
+            Dict[str, List[str]]: 完成的任务ID和对应的图片URLs
+        """
+        if not submit_ids:
+            return {}
+        
+        start_time = time.time()
+        results = {}
+        remaining_ids = submit_ids.copy()
+        
+        logger.info(f"[JimengPlugin] 等待 {len(submit_ids)} 个任务完成...")
+        
+        while remaining_ids and (time.time() - start_time) < timeout:
+            completed_ids = []
+            
+            for submit_id in remaining_ids:
+                try:
+                    image_urls = self.api_client.get_generated_images(submit_id)
+                    if image_urls is not None:
+                        results[submit_id] = image_urls
+                        completed_ids.append(submit_id)
+                        
+                        # 更新存储
+                        self.image_storage.update_image(submit_id, image_urls)
+                        logger.info(f"[JimengPlugin] 任务 {submit_id} 完成，获得 {len(image_urls)} 张图片")
+                        
+                except Exception as e:
+                    logger.error(f"[JimengPlugin] 检查任务 {submit_id} 状态失败: {e}")
+            
+            # 移除已完成的任务
+            for submit_id in completed_ids:
+                remaining_ids.remove(submit_id)
+            
+            if remaining_ids:
+                time.sleep(2)  # 等待2秒后再次检查
+        
+        # 记录未完成的任务
+        if remaining_ids:
+            logger.warning(f"[JimengPlugin] {len(remaining_ids)} 个任务未在超时时间内完成")
+        
+        return results
+    
+    def load_feijing_config(self) -> Optional[List[Dict[str, Any]]]:
+        """加载飞镜配置"""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "feijing.json")
             with open(config_path, "r", encoding='utf-8') as f:
                 config = json.load(f)
-                return config
+            logger.info(f"[JimengPlugin] 飞镜配置加载成功，包含 {len(config)} 个项目")
+            return config
         except Exception as e:
-            logger.error(f"[Jimeng] Failed to load config: {e}")
+            logger.error(f"[JimengPlugin] 飞镜配置加载失败: {e}")
+            return None
+    
+    def download_feijing_from_db(self) -> None:
+        """从数据库中下载飞镜图片"""
+        images = self.image_storage.get_images_by_status(TaskStatus.ALL.value)
+        
+        feijing_config = self.load_feijing_config()
+        if not feijing_config:
+            logger.error("[JimengPlugin] 无法加载飞镜配置")
+            return
+        feijing_dict = {}
+        for item in feijing_config:
+            feijing_dict[item.get('提示词', '')] = item
+        
+        for index, item in enumerate(images):
+            submit_id = item.get('id', '').strip()
+            metadata = item.get('metadata', {})
+            if not metadata:
+                continue
+            prompt = metadata.get('prompt', '')
+            if not prompt:
+                continue
+            if prompt not in feijing_dict:
+                continue
+            feijing_item = feijing_dict[prompt]
+            filename = f"分镜{index+1}"
+            filename = feijing_item.get('编号', filename)
+            if submit_id:
+                image_urls = self.api_client.get_generated_images(submit_id)
+                if image_urls is not None:
+                    self.image_processor.download_image(filename, image_urls)
+                    logger.info(f"[JimengPlugin] {submit_id} 已下载图片: {filename}")
+    
+    def azure_tts(self, filename: str, text: str, generate_srt: bool = True) -> None:
+        """文本转语音并生成字幕文件
+        
+        Args:
+            filename: 输出文件名（不含扩展名）
+            text: 要转换的文本
+            generate_srt: 是否生成SRT字幕文件
+            
+        """
+
+        # This example requires environment variables named "SPEECH_KEY" and "ENDPOINT"
+        # Replace with your own subscription key and endpoint, the endpoint is like : "https://japaneast.api.cognitive.microsoft.com"
+        speech_config = speechsdk.SpeechConfig(subscription=os.environ.get('SPEECH_KEY'), endpoint=os.environ.get('ENDPOINT'))
+        speech_config.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3)
+        # audio_config = speechsdk.audio.AudioOutputConfig(use_default_speaker=True)
+        audio_filename = f"{filename}.mp3"
+        audio_config = speechsdk.audio.AudioOutputConfig(filename=audio_filename)
+
+        # The neural multilingual voice can speak different languages based on the input text.
+        speech_config.speech_synthesis_voice_name='zh-CN-YunzeNeural'
+
+        from module.submaker import SubMaker, TTSChunk
+        submaker = SubMaker()
+        def speech_synthesizer_word_boundary_cb(evt: speechsdk.SpeechSynthesisWordBoundaryEventArgs):
+            # 将duration转换为100纳秒单位（与offset保持一致）
+            duration_in_100ns = int(evt.duration.total_seconds() * 10000000)
+            
+            submaker.feed(TTSChunk(
+                type="WordBoundary",
+                offset=evt.audio_offset,
+                duration=duration_in_100ns,
+                text=evt.text
+            ))
+            # print('WordBoundary event:')
+            # print('\tBoundaryType: {}'.format(evt.boundary_type))
+            # print('\tAudioOffset: {}ms'.format(evt.audio_offset / 10000))
+            # print('\tDuration: {}'.format(evt.duration))
+            # print('\tText: {}'.format(evt.text))
+            # print('\tTextOffset: {}'.format(evt.text_offset))
+            # print('\tWordLength: {}'.format(evt.word_length))
+
+        speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+        speech_synthesizer.synthesis_word_boundary.connect(speech_synthesizer_word_boundary_cb)
+
+        speech_synthesis_result = speech_synthesizer.speak_text_async(text).get()
+        reason = speech_synthesis_result.reason # type: ignore
+
+        if reason == speechsdk.ResultReason.SynthesizingAudioCompleted: # type: ignore
+            logger.info("Speech synthesized for text [{}]".format(text))
+            logger.info(f"[JimengPlugin] 音频文件已生成: {audio_filename}")
+            if generate_srt:
+                # 优化字幕：合并短字幕，避免剪映导入问题
+                submaker.merge_cues(10)  # 合并为10个词一组
+                srt_filename = f"{filename}.srt"
+                with open(srt_filename, "w", encoding='utf-8') as f:
+                    f.write(submaker.get_srt())
+                logger.info(f"[JimengPlugin] 字幕文件已生成: {srt_filename}")
+        elif reason == speechsdk.ResultReason.Canceled: # type: ignore
+            cancellation_details = speech_synthesis_result.cancellation_details # type: ignore
+            print("Speech synthesis canceled: {}".format(cancellation_details.reason))
+            if cancellation_details.reason == speechsdk.CancellationReason.Error: # type: ignore
+                if cancellation_details.error_details:
+                    print("Error details: {}".format(cancellation_details.error_details))
+                    print("Did you set the speech resource key and endpoint values?")
+    
+     
+    def fenjing_to_tts(self) -> None:
+        """飞镜转TTS"""
+        feijing_config = self.load_feijing_config()
+        if not feijing_config:
+            logger.error("[JimengPlugin] 无法加载飞镜配置")
+            return
+        for item in feijing_config:
+            filename = item.get('编号', '')
+            text = item.get('原文', '')
+            if not filename or not text:
+                continue
+            filename = f"./downloads/{filename}"
+            self.azure_tts(filename, text)
+    
+    def process_feijing_batch(self) -> bool:
+        """批量处理飞镜配置"""
+        feijing_config = self.load_feijing_config()
+        if not feijing_config:
+            logger.error("[JimengPlugin] 无法加载飞镜配置")
+            return False
+        
+        # 准备提示词列表
+        prompts = []
+        item_mapping = {}
+        
+        for item in feijing_config:
+            prompt = item.get('提示词', '').strip()
+            if prompt:
+                prompts.append(prompt)
+                item_mapping[len(prompts) - 1] = item
+        
+        if not prompts:
+            logger.warning("[JimengPlugin] 没有找到有效的提示词")
+            return False
+        
+        logger.info(f"[JimengPlugin] 开始批量处理 {len(prompts)} 个提示词...")
+        
+        # 批量生成图片
+        tasks = self.generate_images_batch(prompts, "3.1", "9:16")
+        
+        # 收集成功的任务
+        successful_tasks = [task for task in tasks if task.status == TaskStatus.COMPLETED]
+        failed_tasks = [task for task in tasks if task.status == TaskStatus.FAILED]
+        
+        logger.info(f"[JimengPlugin] 生成完成: {len(successful_tasks)} 成功, {len(failed_tasks)} 失败")
+        
+        if not successful_tasks:
+            return False
+        
+        # 等待所有任务完成
+        submit_ids = [task.result for task in successful_tasks if task.result]
+        results = self.wait_for_completion(submit_ids)
+        
+        # 下载图片
+        download_count = 0
+        for i, task in enumerate(successful_tasks):
+            if task.result and task.result in results:
+                try:
+                    item = item_mapping.get(task.metadata.get('batch_index', i))
+                    if item:
+                        number = item.get('编号', f'img_{i}')
+                        image_urls = results[task.result]
+                        self.image_processor.download_image(number, image_urls)
+                        download_count += 1
+                        logger.info(f"[JimengPlugin] 已下载图片: {number}")
+                except Exception as e:
+                    logger.error(f"[JimengPlugin] 下载图片失败 (任务 {task.task_id}): {e}")
+        
+        logger.info(f"[JimengPlugin] 批量处理完成，共下载 {download_count} 组图片")
+        return download_count > 0
+    
+    def cleanup(self) -> None:
+        """清理资源"""
+        try:
+            if hasattr(self, 'batch_processor'):
+                self.batch_processor.close()
+            
+            logger.info("[JimengPlugin] 资源清理完成")
+        except Exception as e:
+            logger.error(f"[JimengPlugin] 资源清理失败: {e}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        try:
+            stats = {
+                "config": {
+                    "model": self.generation_config.model,
+                    "ratio": self.generation_config.ratio,
+                    "max_retries": self.generation_config.max_retries,
+                    "retention_days": self.config_manager.get("storage.retention_days", 7)
+                },
+                "storage": {
+                    "db_path": self.image_storage.db_path,
+                    "retention_days": self.image_storage.retention_days
+                }
+            }
+            return stats
+        except Exception as e:
+            logger.error(f"[JimengPlugin] 获取统计信息失败: {e}")
             return {}
 
-    def get_help_text(self, **kwargs):
-        commands = self.config.get('commands', {})
-        draw_command = commands.get('draw', '即梦') if isinstance(commands, dict) else '即梦'
+if __name__ == "__main__":
+    # 创建插件实例
+    jimeng = JimengPlugin()
+    
+    try:
+        # 显示统计信息
+        stats = jimeng.get_stats()
+        logger.info(f"[Main] 插件统计信息: {stats}")
         
-        help_text = "即梦AI绘画和视频生成插件使用说明：\n\n"
+        # submit_id = "6dedc742-d8c2-45d4-9daf-7965916e89aa"
+        # filename = "分镜1"
+        # image_urls = jimeng.api_client.get_generated_images(submit_id)
+        # if image_urls is not None:
+        #     jimeng.image_processor.download_image(filename, image_urls)
+        #     logger.info(f"[JimengPlugin] {submit_id} 已下载图片: {filename}")
+        # exit(0)
+        jimeng.fenjing_to_tts()
+        # exit(0)
+        # jimeng.download_feijing_from_db()
+        # # 批量处理飞镜配置
+        success = jimeng.process_feijing_batch()
         
-        # 基本命令说明
-        help_text += "基本命令：\n"
-        help_text += f"1. 生成图片: '{draw_command} [描述] [模型] [比例]'\n"
-        help_text += f"2. 生成视频: '{draw_command}v [描述] [比例]'\n\n"
-        
-        # 支持的模型
-        help_text += "支持的模型: 2.0, 2.1, 2.0p, 3.0, xl\n\n"
-        
-        # 支持的比例
-        help_text += "支持的比例: "
-        ratios = list(self.config.get("params", {}).get("ratios", {}).keys())
-        help_text += ", ".join(ratios)
-        help_text += "\n\n"
-        
-        # 使用示例
-        help_text += "示例：\n"
-        help_text += f"1. {draw_command} 一只可爱的猫咪  # 使用默认模型(2.1)和比例(1:1)\n"
-        help_text += f"2. {draw_command} 一只可爱的猫咪-3.0  # 使用图片3.0模型\n"
-        help_text += f"3. {draw_command} 一只可爱的猫咪-2.0p-16:9  # 使用2.0 Pro模型和16:9比例\n"
-        help_text += f"4. j放大 1704067890 2  # 查看ID为1704067890的第2张原图\n"
-        help_text += f"5. {draw_command}v 现代美少女在海边  # 生成视频，使用默认比例\n"
-        help_text += f"6. {draw_command}v 现代美少女在海边-16:9  # 生成视频，使用16:9比例\n"
-        
-        return help_text
-
-    def send_reply(self, e_context: EventContext, reply: Reply):
-        """发送回复"""
-        e_context['reply'] = reply
-        e_context.action = EventAction.BREAK_PASS
-
-    def send_image_and_text(self, e_context: EventContext, image_content, text_content):
-        """发送图片和文本消息"""
-        # 先发送图片
-        image_reply = Reply(ReplyType.IMAGE, image_content)
-        self.send_reply(e_context, image_reply)
-        
-        # 再发送文本
-        if text_content:
-            text_reply = Reply(ReplyType.TEXT, text_content)
-            self.send_reply(e_context, text_reply)
-
-    def generate_video(self, prompt, ratio=None):
-        """生成视频
-        Args:
-            prompt: 视频提示词
-            ratio: 视频比例，如"16:9"，默认为配置中的默认比例
-        Returns:
-            tuple: (success, result)
-        """
-        try:
-            # 检查配置是否完整
-            if not self.config.get("video_api", {}).get("cookie") or not self.config.get("video_api", {}).get("sign"):
-                return False, "请先在config.json中配置video_api的cookie和sign"
-
-            # 获取视频比例配置
-            if not ratio:
-                ratio = self.config.get("default_video_ratio", "16:9")
-                
-            # 获取比例的宽高配置
-            ratio_config = self.config.get("video_ratios", {}).get(ratio)
-            if not ratio_config:
-                # 如果未找到比例配置，使用默认16:9
-                ratio = "16:9"
-                ratio_config = {"width": 1024, "height": 576}
-            
-            # 生成唯一的submit_id
-            submit_id = str(uuid.uuid4())
-            
-            # 准备请求数据
-            generate_video_payload = {
-                "submit_id": submit_id,
-                "task_extra": "{\"promptSource\":\"custom\",\"originSubmitId\":\"0340110f-5a94-42a9-b737-f4518f90361f\",\"isDefaultSeed\":1,\"originTemplateId\":\"\",\"imageNameMapping\":{},\"isUseAiGenPrompt\":false,\"batchNumber\":1}",
-                "http_common_info": {"aid": 513695},
-                "input": {
-                    "video_aspect_ratio": ratio,
-                    "seed": 2934141961,
-                    "video_gen_inputs": [
-                        {
-                            "prompt": prompt,
-                            "fps": 24,
-                            "duration_ms": 5000,
-                            "video_mode": 2,
-                            "template_id": ""
-                        }
-                    ],
-                    "priority": 0,
-                    "model_req_key": "dreamina_ic_generate_video_model_vgfm_lite"
-                },
-                "mode": "workbench",
-                "history_option": {},
-                "commerce_info": {
-                    "resource_id": "generate_video",
-                    "resource_id_type": "str",
-                    "resource_sub_type": "aigc",
-                    "benefit_type": "basic_video_operation_vgfm_lite"
-                },
-                "client_trace_data": {}
-            }
-
-            # 发送生成视频请求
-            generate_video_url = f"{self.video_api_base}/generate_video?aid=513695"
-            logger.debug(f"[Jimeng] Sending video generation request to {generate_video_url}")
-            
-            # 更新请求头的device-time
-            self.video_api_headers['device-time'] = str(int(time.time()))
-            response = requests.post(generate_video_url, headers=self.video_api_headers, json=generate_video_payload)
-            
-            if response.status_code != 200:
-                logger.error(f"[Jimeng] Video generation request failed with status code {response.status_code}")
-                return False, f"视频生成请求失败，状态码：{response.status_code}"
-
-            response_data = response.json()
-            logger.debug(f"[Jimeng] Video generation response: {response_data}")
-            
-            if not response_data or "data" not in response_data or "aigc_data" not in response_data["data"]:
-                logger.error(f"[Jimeng] Invalid response format: {response_data}")
-                return False, "视频生成接口返回格式错误"
-                
-            task_id = response_data["data"]["aigc_data"]["task"]["task_id"]
-            logger.info(f"[Jimeng] Video generation task created with ID: {task_id}")
-            
-            # 轮询检查视频生成状态
-            mget_generate_task_url = f"{self.video_api_base}/mget_generate_task?aid=513695"
-            mget_generate_task_payload = {"task_id_list": [task_id]}
-            
-            # 最多尝试30次，每次间隔5秒
-            for attempt in range(30):
-                time.sleep(5)
-                logger.debug(f"[Jimeng] Checking video status, attempt {attempt + 1}/30")
-                
-                # 更新请求头的device-time
-                self.video_api_headers['device-time'] = str(int(time.time()))
-                response = requests.post(mget_generate_task_url, headers=self.video_api_headers, json=mget_generate_task_payload)
-                
-                if response.status_code != 200:
-                    logger.warning(f"[Jimeng] Status check failed with status code {response.status_code}")
-                    continue
-                
-                response_data = response.json()
-                if not response_data or "data" not in response_data or "task_map" not in response_data["data"]:
-                    logger.warning(f"[Jimeng] Invalid status response format: {response_data}")
-                    continue
-                
-                task_data = response_data["data"]["task_map"].get(task_id)
-                if not task_data:
-                    logger.warning(f"[Jimeng] Task {task_id} not found in response")
-                    continue
-                
-                task_status = task_data.get("status")
-                logger.debug(f"[Jimeng] Task {task_id} status: {task_status}")
-                
-                if task_status == 50:  # 视频生成完成
-                    if "item_list" in task_data and task_data["item_list"] and "video" in task_data["item_list"][0]:
-                        video_data = task_data["item_list"][0]["video"]
-                        if "transcoded_video" in video_data and "origin" in video_data["transcoded_video"]:
-                            video_url = video_data["transcoded_video"]["origin"]["video_url"]
-                            logger.info(f"[Jimeng] Video generation completed, URL: {video_url}")
-                            return True, video_url
-                    
-                    logger.error(f"[Jimeng] Video URL not found in completed task data: {task_data}")
-                    return False, "视频生成完成但未找到下载地址"
-                    
-            logger.warning(f"[Jimeng] Video generation timed out for task {task_id}")
-            return False, "视频生成超时，请稍后重试"
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"[Jimeng] Network error during video generation: {str(e)}")
-            return False, f"网络请求错误: {str(e)}"
-        except json.JSONDecodeError as e:
-            logger.error(f"[Jimeng] JSON decode error: {str(e)}")
-            return False, "API响应格式错误"
-        except Exception as e:
-            logger.error(f"[Jimeng] Error generating video: {str(e)}")
-            return False, f"视频生成失败: {str(e)}"
-
-    def _parse_command(self, content):
-        """解析命令参数
-        Args:
-            content: 命令内容，如 "一只猫 2.1 4:3" 或 "一只猫-2.1-4:3"
-        Returns:
-            tuple: (prompt, model, ratio)
-        """
-        # 设置默认值
-        model = self.config.get("params", {}).get("default_model", "2.1")
-        ratio = self.config.get("params", {}).get("default_ratio", "1:1")
-        
-        # 使用"-"分割提示词、模型和比例
-        if "-" in content:
-            parts = content.split("-")
-            # 取除最后两个部分外的所有内容作为提示词
-            if len(parts) >= 3:
-                # 可能最后两个是模型和比例
-                possible_model = parts[-2].strip().lower()
-                possible_ratio = parts[-1].strip().lower()
-                
-                # 检查是否是有效的模型或比例
-                valid_models = list(self.config.get("params", {}).get("models", {}).keys()) + ["20", "21", "20p", "30", "3.0", "xlpro"]
-                valid_ratios = list(self.config.get("params", {}).get("ratios", {}).keys())
-                
-                is_model = False
-                is_ratio = False
-                
-                # 检查possible_model是否为模型
-                if possible_model in valid_models or possible_model.replace(".", "") in ["20", "21", "20p", "30", "xlpro"]:
-                    is_model = True
-                
-                # 检查possible_ratio是否为比例
-                if ":" in possible_ratio and possible_ratio in valid_ratios:
-                    is_ratio = True
-                
-                if is_model and is_ratio:
-                    # 如果最后两个部分是模型和比例，则取除这两个部分之外的所有内容作为提示词
-                    prompt = "-".join(parts[:-2])
-                    
-                    # 处理模型简写
-                    if possible_model == "20":
-                        model = "2.0"
-                    elif possible_model == "21":
-                        model = "2.1"
-                    elif possible_model == "20p":
-                        model = "2.0p"
-                    elif possible_model == "30":
-                        model = "3.0"
-                    elif possible_model == "xlpro":
-                        model = "xl"
-                    else:
-                        model = possible_model
-                    
-                    ratio = possible_ratio
-                else:
-                    # 如果最后两个部分不全是模型和比例，则取所有内容作为提示词
-                    prompt = content
-            else:
-                # 如果parts少于3个，则可能没有同时指定模型和比例，整个作为提示词
-                prompt = content
+        if success:
+            logger.info("[Main] 批量处理成功完成")
         else:
-            # 使用空格分割
-            parts = content.split()
-            prompt = parts[0] if parts else content
+            logger.error("[Main] 批量处理失败")
+            exit(1)
             
-            # 解析剩余参数
-            for part in parts[1:]:
-                part = part.lower().replace("：", ":")  # 统一处理中英文冒号
-                
-                # 检查是否是模型参数
-                models = self.config.get("params", {}).get("models", {})
-                if part in models or part.replace(".", "") in ["20", "21", "20p", "30", "xlpro"]:
-                    # 处理简写
-                    if part == "20":
-                        model = "2.0"
-                    elif part == "21":
-                        model = "2.1"
-                    elif part == "20p":
-                        model = "2.0p"
-                    elif part == "30":
-                        model = "3.0"
-                    elif part == "xlpro":
-                        model = "xl"
-                    else:
-                        model = part
-                    continue
-                    
-                # 检查是否是比例参数
-                ratios = self.config.get("params", {}).get("ratios", {})
-                if part in ratios:
-                    ratio = part
-                    continue
-        
-        # 如果最终提示词为空，使用整个内容作为提示词
-        if not prompt or prompt.strip() == "":
-            prompt = content
-                
-        logger.debug(f"[Jimeng] Parsed command: prompt='{prompt}', model='{model}', ratio='{ratio}'")
-        return prompt, model, ratio
-
-    def on_handle_context(self, e_context: EventContext):
-        """处理消息"""
-        context = e_context['context']
-        content = context.content
-        logger.debug(f"[Jimeng] on_handle_context. content: {content}")
-        
-        if not content:
-            return
-            
-        # 检查是否是即梦命令
-        if not (content.startswith("即梦") or content.startswith("j放大")):
-            return
-            
-        e_context.action = EventAction.BREAK_PASS
-        
-        # 处理放大图片命令
-        if content.startswith("j放大"):
-            try:
-                _, img_id, index = content.split(" ")
-                index = int(index)
-                image_content, error = self.api_client.get_original_image(img_id, index)
-                if error:
-                    e_context['reply'] = Reply(ReplyType.TEXT, error)
-                else:
-                    # 如果返回的是URL，使用IMAGE_URL类型
-                    if isinstance(image_content, str) and (image_content.startswith('http://') or image_content.startswith('https://')):
-                        e_context['reply'] = Reply(ReplyType.IMAGE_URL, image_content)
-                    else:
-                        # 如果是二进制内容，使用IMAGE类型
-                        e_context['reply'] = Reply(ReplyType.IMAGE, image_content)
-            except Exception as e:
-                logger.error(f"[Jimeng] Error getting original image: {str(e)}")
-                e_context['reply'] = Reply(ReplyType.TEXT, f"获取原图失败: {str(e)}")
-            return
-            
-        # 去除命令前缀
-        content = content[2:].strip()
-        
-        # 处理视频生成命令
-        if content.startswith('v') or content.startswith('V'):
-            # 发送等待提示
-            wait_reply = Reply(ReplyType.TEXT, "即梦正在生成视频中，请稍后......")
-            e_context["channel"].send(wait_reply, e_context["context"])
-            
-            # 去除前缀v或V，获取提示词和可能的比例参数
-            video_content = content[1:].strip()
-            
-            # 解析视频命令参数，支持比例参数
-            prompt = video_content
-            ratio = None
-            
-            # 检查是否包含比例参数（使用"-"分隔或空格分隔）
-            if "-" in video_content:
-                parts = video_content.split("-")
-                if len(parts) >= 2:
-                    last_part = parts[-1].strip()
-                    valid_ratios = list(self.config.get("video_ratios", {}).keys())
-                    
-                    # 检查最后一部分是否是有效比例
-                    if ":" in last_part and last_part in valid_ratios:
-                        ratio = last_part
-                        # 其余部分作为提示词
-                        prompt = "-".join(parts[:-1])
-            else:
-                # 使用空格分割
-                parts = video_content.split()
-                if len(parts) >= 2:
-                    last_part = parts[-1].strip()
-                    valid_ratios = list(self.config.get("video_ratios", {}).keys())
-                    
-                    # 检查最后一部分是否是有效比例
-                    if ":" in last_part and last_part in valid_ratios:
-                        ratio = last_part
-                        # 其余部分作为提示词
-                        prompt = " ".join(parts[:-1])
-            
-            # 生成视频
-            logger.debug(f"[Jimeng] Generating video with prompt: '{prompt}', ratio: {ratio}")
-            success, result = self.generate_video(prompt, ratio)
-            
-            if success:
-                e_context['reply'] = Reply(ReplyType.VIDEO_URL, result)
-            else:
-                e_context['reply'] = Reply(ReplyType.TEXT, result)
-            return
-        
-        # 处理图片生成命令
-        try:
-            # 解析命令参数
-            prompt, model, ratio = self._parse_command(content)
-            
-            # 发送等待提示
-            wait_reply = Reply(ReplyType.TEXT, f"即梦正在使用 {model} 模型以 {ratio} 比例生成图片，请稍候......")
-            e_context["channel"].send(wait_reply, e_context["context"])
-            
-            # 生成图片
-            result = self.api_client.generate_image(prompt, model=model, ratio=ratio)
-            if not result:
-                e_context['reply'] = Reply(ReplyType.TEXT, "图片生成失败，请稍后重试")
-                return
-            
-            # 存储图片信息
-            img_id = str(int(time.time()))
-            self.image_storage.store_image(
-                img_id,
-                result["urls"],
-                metadata={
-                    "prompt": content,
-                    "type": "generate"
-                }
-            )
-            
-            # 发送图片
-            if len(result["urls"]) >= 4:
-                image_file = self.image_processor.combine_images(result["urls"][:4])
-                if image_file:
-                    image_reply = Reply(ReplyType.IMAGE, image_file)
-                    e_context["channel"].send(image_reply, e_context["context"])
-                    image_file.close()
-                    
-                    # 删除临时拼接图片
-                    temp_dir = os.path.join(os.path.dirname(__file__), "temp")
-                    for file in os.listdir(temp_dir):
-                        if file.startswith("combined_"):
-                            try:
-                                os.remove(os.path.join(temp_dir, file))
-                                logger.debug(f"[Jimeng] Removed temp file: {file}")
-                            except Exception as e:
-                                logger.warning(f"[Jimeng] Failed to remove temp file {file}: {e}")
-                    
-                    # 发送帮助文本
-                    help_text = f"图片生成成功！\n图片ID: {img_id}\n使用'j放大 {img_id} 序号'可以查看原图"
-                    e_context["channel"].send(Reply(ReplyType.TEXT, help_text), e_context["context"])
-                    e_context['reply'] = None  # 已经发送过图片，不需要再设置reply
-                else:
-                    # 如果合并失败，发送单张图片
-                    for url in result["urls"]:
-                        image_reply = Reply(ReplyType.IMAGE_URL, url)
-                        e_context["channel"].send(image_reply, e_context["context"])
-                        
-                    # 发送帮助文本
-                    help_text = f"图片生成成功！\n图片ID: {img_id}\n使用'j放大 {img_id} 序号'可以查看原图"
-                    text_reply = Reply(ReplyType.TEXT, help_text)
-                    e_context["channel"].send(text_reply, e_context["context"])
-                    e_context['reply'] = None  # 已经发送过图片，不需要再设置reply
-            else:
-                # 直接发送单张图片的URL
-                for url in result["urls"]:
-                    image_reply = Reply(ReplyType.IMAGE_URL, url)
-                    e_context["channel"].send(image_reply, e_context["context"])
-                    
-                # 发送帮助文本
-                help_text = f"图片生成成功！\n图片ID: {img_id}\n使用'j放大 {img_id} 序号'可以查看原图"
-                text_reply = Reply(ReplyType.TEXT, help_text)
-                e_context["channel"].send(text_reply, e_context["context"])
-                e_context['reply'] = None  # 已经发送过图片，不需要再设置reply
-            
-        except Exception as e:
-            logger.error(f"[Jimeng] Error generating image: {e}")
-            e_context['reply'] = Reply(ReplyType.TEXT, f"图片生成失败: {str(e)}")
-
-    def on_stop_plugin(self):
-        """清理临时文件"""
-        self.api_client.cleanup_temp_files()
+    except KeyboardInterrupt:
+        logger.info("[Main] 用户中断程序")
+    except Exception as e:
+        logger.error(f"[Main] 程序异常: {e}")
+        exit(1)
+    finally:
+        # 清理资源
+        jimeng.cleanup()
+        logger.info("[Main] 程序结束")
