@@ -1,0 +1,10 @@
+__pycache__
+temp
+storage
+feijing.json
+*.json
+*.mp3
+*.srt
+downloads
+logs
+.env
