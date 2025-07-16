@@ -10,7 +10,7 @@ from .image_storage import ImageStorage
 
 logger = logging.getLogger(__name__)
 class ApiClient:
-    def __init__(self, token_manager, config):
+    def __init__(self, token_manager, config, image_storage=None):
         self.token_manager = token_manager
         self.config = config
         self.temp_files = []
@@ -27,11 +27,15 @@ class ApiClient:
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
             
-        # 初始化图片处理器和存储器
-        self.image_storage = ImageStorage(
-            os.path.join(storage_dir, "images.db"),
-            retention_days=config.get("storage", {}).get("retention_days", 7)
-        )
+        # 使用传入的image_storage实例，如果没有则创建新的
+        if image_storage is not None:
+            self.image_storage = image_storage
+        else:
+            # 初始化图片处理器和存储器
+            self.image_storage = ImageStorage(
+                os.path.join(storage_dir, "images.db"),
+                retention_days=config.get("storage", {}).get("retention_days", 7)
+            )
         
         # 初始化通用请求头
         self.headers = {
@@ -119,7 +123,6 @@ class ApiClient:
             logger.debug(f"[Jimeng] Requesting generated images for history_id: {submit_id}")
             response = requests.post(url, headers=self.headers, params=params, json=data)
             result = response.json()
-            # print(f"result: {json.dumps(result, ensure_ascii=False)}")
             
             if result.get('ret') == '0':
                 history_data = result.get('data', {}).get(submit_id, {})
@@ -174,33 +177,7 @@ class ApiClient:
             logger.error(f"[Jimeng] Error getting generated images: {e}")
             return None
 
-    def get_original_image(self, img_id: str, index: int) -> tuple:
-        """获取原始图片
-        Args:
-            img_id: 图片ID
-            index: 图片序号（1-based）
-        Returns:
-            tuple: (image_content/url, error_message)
-        """
-        try:
-            # 从存储中获取图片信息
-            image_info = self.image_storage.get_image(img_id)
-            if not image_info:
-                return None, "图片不存在或已过期"
-                
-            urls = image_info.get("urls", [])
-            if not urls or index < 1 or index > len(urls):
-                return None, f"图片序号无效，有效范围: 1-{len(urls)}"
-                
-            # 获取指定序号的图片URL
-            url = urls[index - 1]
-            
-            # 直接返回URL，让上层决定如何处理
-            return url, None
-            
-        except Exception as e:
-            logger.error(f"[Jimeng] Error getting original image: {e}")
-            return None, f"获取图片失败: {str(e)}"
+
 
     def _parse_model_and_ratio(self, prompt: str) -> tuple:
         """解析提示词中的模型和比例参数
@@ -524,7 +501,6 @@ class ApiClient:
             
             # 发送请求
             logger.debug(f"[Jimeng] Generating image with prompt: {prompt}, model: {model}, ratio: {ratio}")
-            # print(json.dumps(data, ensure_ascii=False))
             response = self._send_request("POST", url, params=params, json=data)
 
             if not response or response.get('ret') != '0':

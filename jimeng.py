@@ -1,19 +1,20 @@
 import json
 import os
 import time
-from typing import Dict, List, Optional, Any, Tuple
+import argparse
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
 import logging
-import azure.cognitiveservices.speech as speechsdk
 # 移除并发处理相关导入，因为接口不支持并发调用
 
-from module.token_manager import TokenManager
-from module.api_client import ApiClient
-from module.image_storage import ImageStorage
-from module.image_processor import ImageProcessor
+from module import (TokenManager,
+    ApiClient,
+    ImageStorage,
+    ImageProcessor,
+    AudioProcessor
+)
 from dotenv import load_dotenv
-
 load_dotenv()
 
 # 配置日志格式和处理器
@@ -195,7 +196,7 @@ class BatchProcessor:
         """添加任务"""
         self.tasks.append(task)
     
-    def process_batch(self, generator_func, *args, **kwargs) -> List[ImageGenerationTask]:
+    async def process_batch(self, generator_func, *args, **kwargs) -> List[ImageGenerationTask]:
         """批量处理任务（顺序处理）"""
         if not self.tasks:
             return []
@@ -208,7 +209,7 @@ class BatchProcessor:
                 logger.info(f"[BatchProcessor] 处理任务 {i+1}/{len(self.tasks)}: {task.task_id}")
                 
                 # 调用生成函数
-                result = generator_func(task, *args, **kwargs)
+                result = await generator_func(task, *args, **kwargs)
                 
                 if result:
                     task.mark_completed(result)
@@ -240,11 +241,12 @@ class BatchProcessor:
 class JimengPlugin:
     """即梦插件主类"""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: str | None = None):
         # 初始化配置管理器
         self.config_manager = ConfigManager(config_path)
         self.generation_config = self.config_manager.get_generation_config()
         self.api_config = self.config_manager.get_api_config()
+        self.audio_processor = AudioProcessor()
         
         # 初始化目录
         self._init_directories()
@@ -296,9 +298,9 @@ class JimengPlugin:
         self.token_manager = TokenManager(self.config_manager.config)
         
         # 初始化API客户端
-        self.api_client = ApiClient(self.token_manager, self.config_manager.config)
+        self.api_client = ApiClient(self.token_manager, self.config_manager.config, self.image_storage)
     
-    def generate_image(self, prompt: str, model: Optional[str] = None, ratio: Optional[str] = None) -> Optional[str]:
+    async def generate_image(self, prompt: str, model: Optional[str] = None, ratio: Optional[str] = None) -> Optional[str]:
         """生成单张图片
         
         Args:
@@ -328,7 +330,7 @@ class JimengPlugin:
                 submit_id = self.api_client.generate_image(prompt, model, ratio)
                 if submit_id:
                     # 存储图片信息
-                    self.image_storage.store_image(
+                    await self.image_storage.store_image(
                         submit_id,
                         metadata={
                             "prompt": prompt,
@@ -353,7 +355,7 @@ class JimengPlugin:
         logger.error(f"[JimengPlugin] 图片生成失败，已重试 {self.generation_config.max_retries} 次")
         return None
     
-    def generate_images_batch(self, prompts: List[str], model: Optional[str] = None, ratio: Optional[str] = None) -> List[ImageGenerationTask]:
+    async def generate_images_batch(self, prompts: List[str], model: Optional[str] = None, ratio: Optional[str] = None) -> List[ImageGenerationTask]:
         """批量生成图片
         
         Args:
@@ -385,16 +387,16 @@ class JimengPlugin:
             self.batch_processor.add_task(task)
         
         # 批量处理
-        completed_tasks = self.batch_processor.process_batch(
+        completed_tasks = await self.batch_processor.process_batch(
             self._generate_single_task
         )
         
         return completed_tasks
     
-    def _generate_single_task(self, task: ImageGenerationTask) -> Optional[str]:
+    async def _generate_single_task(self, task: ImageGenerationTask) -> Optional[str]:
         """处理单个生成任务"""
         try:
-            submit_id = self.generate_image(task.prompt, task.model, task.ratio)
+            submit_id = await self.generate_image(task.prompt, task.model, task.ratio)
             return submit_id
         except Exception as e:
             logger.error(f"[JimengPlugin] 任务 {task.task_id} 处理失败: {e}")
@@ -411,7 +413,7 @@ class JimengPlugin:
         
         return True
     
-    def wait_for_completion(self, submit_ids: List[str], timeout: int = 3600) -> Dict[str, List[str]]:
+    async def wait_for_completion(self, submit_ids: List[str], timeout: int = 3600) -> Dict[str, List[str]]:
         """等待图片生成完成
         
         Args:
@@ -441,7 +443,7 @@ class JimengPlugin:
                         completed_ids.append(submit_id)
                         
                         # 更新存储
-                        self.image_storage.update_image(submit_id, image_urls)
+                        await self.image_storage.update_image(submit_id, image_urls)
                         logger.info(f"[JimengPlugin] 任务 {submit_id} 完成，获得 {len(image_urls)} 张图片")
                         
                 except Exception as e:
@@ -472,9 +474,9 @@ class JimengPlugin:
             logger.error(f"[JimengPlugin] 飞镜配置加载失败: {e}")
             return None
     
-    def download_feijing_from_db(self) -> None:
+    async def download_feijing_from_db(self) -> None:
         """从数据库中下载飞镜图片"""
-        images = self.image_storage.get_images_by_status(TaskStatus.ALL.value)
+        images = await self.image_storage.get_images_by_status(TaskStatus.ALL.value)
         
         feijing_config = self.load_feijing_config()
         if not feijing_config:
@@ -503,7 +505,7 @@ class JimengPlugin:
                     self.image_processor.download_image(filename, image_urls)
                     logger.info(f"[JimengPlugin] {submit_id} 已下载图片: {filename}")
     
-    def azure_tts(self, filename: str, text: str, generate_srt: bool = True) -> None:
+    def text_to_speech(self, filename: str, text: str, generate_srt: bool = True) -> None:
         """文本转语音并生成字幕文件
         
         Args:
@@ -512,79 +514,77 @@ class JimengPlugin:
             generate_srt: 是否生成SRT字幕文件
             
         """
-
-        # This example requires environment variables named "SPEECH_KEY" and "ENDPOINT"
-        # Replace with your own subscription key and endpoint, the endpoint is like : "https://japaneast.api.cognitive.microsoft.com"
-        speech_config = speechsdk.SpeechConfig(subscription=os.environ.get('SPEECH_KEY'), endpoint=os.environ.get('ENDPOINT'))
-        speech_config.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3)
-        # audio_config = speechsdk.audio.AudioOutputConfig(use_default_speaker=True)
-        audio_filename = f"{filename}.mp3"
-        audio_config = speechsdk.audio.AudioOutputConfig(filename=audio_filename)
-
-        # The neural multilingual voice can speak different languages based on the input text.
-        speech_config.speech_synthesis_voice_name='zh-CN-YunzeNeural'
-
-        from module.submaker import SubMaker, TTSChunk
-        submaker = SubMaker()
-        def speech_synthesizer_word_boundary_cb(evt: speechsdk.SpeechSynthesisWordBoundaryEventArgs):
-            # 将duration转换为100纳秒单位（与offset保持一致）
-            duration_in_100ns = int(evt.duration.total_seconds() * 10000000)
-            
-            submaker.feed(TTSChunk(
-                type="WordBoundary",
-                offset=evt.audio_offset,
-                duration=duration_in_100ns,
-                text=evt.text
-            ))
-            # print('WordBoundary event:')
-            # print('\tBoundaryType: {}'.format(evt.boundary_type))
-            # print('\tAudioOffset: {}ms'.format(evt.audio_offset / 10000))
-            # print('\tDuration: {}'.format(evt.duration))
-            # print('\tText: {}'.format(evt.text))
-            # print('\tTextOffset: {}'.format(evt.text_offset))
-            # print('\tWordLength: {}'.format(evt.word_length))
-
-        speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
-        speech_synthesizer.synthesis_word_boundary.connect(speech_synthesizer_word_boundary_cb)
-
-        speech_synthesis_result = speech_synthesizer.speak_text_async(text).get()
-        reason = speech_synthesis_result.reason # type: ignore
-
-        if reason == speechsdk.ResultReason.SynthesizingAudioCompleted: # type: ignore
-            logger.info("Speech synthesized for text [{}]".format(text))
-            logger.info(f"[JimengPlugin] 音频文件已生成: {audio_filename}")
-            if generate_srt:
-                # 优化字幕：合并短字幕，避免剪映导入问题
-                submaker.merge_cues(10)  # 合并为10个词一组
-                srt_filename = f"{filename}.srt"
-                with open(srt_filename, "w", encoding='utf-8') as f:
-                    f.write(submaker.get_srt())
-                logger.info(f"[JimengPlugin] 字幕文件已生成: {srt_filename}")
-        elif reason == speechsdk.ResultReason.Canceled: # type: ignore
-            cancellation_details = speech_synthesis_result.cancellation_details # type: ignore
-            print("Speech synthesis canceled: {}".format(cancellation_details.reason))
-            if cancellation_details.reason == speechsdk.CancellationReason.Error: # type: ignore
-                if cancellation_details.error_details:
-                    print("Error details: {}".format(cancellation_details.error_details))
-                    print("Did you set the speech resource key and endpoint values?")
+        
+        success = self.audio_processor.text_to_speech(
+            filename=filename,
+            text=text,
+            generate_srt=generate_srt,
+            merge_words=10
+        )
+        
+        if success:
+            logger.info(f"[JimengPlugin] 音频和字幕生成成功: {filename}")
+        else:
+            logger.error(f"[JimengPlugin] 音频和字幕生成失败: {filename}")
     
      
-    def fenjing_to_tts(self) -> None:
-        """飞镜转TTS"""
+    def fenjing_to_tts(self, voice_name: str = 'zh-CN-YunzeNeural') -> None:
+        """飞镜转TTS
+        
+        Args:
+            voice_name: 语音名称，默认为中文云泽神经语音
+        """
         feijing_config = self.load_feijing_config()
         if not feijing_config:
             logger.error("[JimengPlugin] 无法加载飞镜配置")
             return
-        for item in feijing_config:
+        
+        logger.info(f"[JimengPlugin] 开始飞镜转TTS，使用语音: {voice_name}")
+        
+        success_count = 0
+        total_count = len(feijing_config)
+        
+        for i, item in enumerate(feijing_config):
             filename = item.get('编号', '')
             text = item.get('原文', '')
             if not filename or not text:
+                logger.warning(f"[JimengPlugin] 跳过第 {i+1} 项：缺少编号或原文")
                 continue
+            
+            logger.info(f"[JimengPlugin] 处理第 {i+1}/{total_count} 项: {filename}")
             filename = f"./downloads/{filename}"
-            self.azure_tts(filename, text)
+            
+            try:
+                success = self.audio_processor.text_to_speech(
+                    filename=filename,
+                    text=text,
+                    voice_name=voice_name,
+                    generate_srt=True,
+                    merge_words=10
+                )
+                
+                if success:
+                    success_count += 1
+                    logger.info(f"[JimengPlugin] {filename} TTS生成成功")
+                else:
+                    logger.error(f"[JimengPlugin] {filename} TTS生成失败")
+                    
+            except Exception as e:
+                logger.error(f"[JimengPlugin] {filename} TTS处理异常: {e}")
+        
+        logger.info(f"[JimengPlugin] 飞镜转TTS完成: {success_count}/{total_count} 成功")
     
-    def process_feijing_batch(self) -> bool:
-        """批量处理飞镜配置"""
+    async def process_feijing_batch(self, model: str = "3.1", ratio: str = "9:16", timeout: int = 3600) -> bool:
+        """批量处理飞镜配置
+        
+        Args:
+            model: 图片生成模型，默认为3.1
+            ratio: 图片比例，默认为9:16
+            timeout: 超时时间（秒），默认为3600秒
+            
+        Returns:
+            bool: 是否成功处理
+        """
         feijing_config = self.load_feijing_config()
         if not feijing_config:
             logger.error("[JimengPlugin] 无法加载飞镜配置")
@@ -605,9 +605,10 @@ class JimengPlugin:
             return False
         
         logger.info(f"[JimengPlugin] 开始批量处理 {len(prompts)} 个提示词...")
+        logger.info(f"[JimengPlugin] 使用模型: {model}, 比例: {ratio}, 超时: {timeout}秒")
         
         # 批量生成图片
-        tasks = self.generate_images_batch(prompts, "3.1", "9:16")
+        tasks = await self.generate_images_batch(prompts, model, ratio)
         
         # 收集成功的任务
         successful_tasks = [task for task in tasks if task.status == TaskStatus.COMPLETED]
@@ -616,11 +617,12 @@ class JimengPlugin:
         logger.info(f"[JimengPlugin] 生成完成: {len(successful_tasks)} 成功, {len(failed_tasks)} 失败")
         
         if not successful_tasks:
+            logger.error("[JimengPlugin] 没有成功生成的任务")
             return False
         
         # 等待所有任务完成
         submit_ids = [task.result for task in successful_tasks if task.result]
-        results = self.wait_for_completion(submit_ids)
+        results = await self.wait_for_completion(submit_ids, timeout)
         
         # 下载图片
         download_count = 0
@@ -640,11 +642,14 @@ class JimengPlugin:
         logger.info(f"[JimengPlugin] 批量处理完成，共下载 {download_count} 组图片")
         return download_count > 0
     
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         """清理资源"""
         try:
             if hasattr(self, 'batch_processor'):
                 self.batch_processor.close()
+            
+            if hasattr(self, 'image_storage'):
+                await self.image_storage.close()
             
             logger.info("[JimengPlugin] 资源清理完成")
         except Exception as e:
@@ -670,33 +675,149 @@ class JimengPlugin:
             logger.error(f"[JimengPlugin] 获取统计信息失败: {e}")
             return {}
 
-if __name__ == "__main__":
+def parse_arguments():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description="即梦插件 - AI图片生成和音频处理工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用示例:
+  python jimeng.py --tts                    # 只执行飞镜转TTS
+  python jimeng.py --batch                  # 只执行批量图片生成
+  python jimeng.py --tts --batch            # 执行TTS和批量生成
+  python jimeng.py --download               # 从数据库下载飞镜图片
+  python jimeng.py --stats                  # 只显示统计信息
+  python jimeng.py                          # 默认执行TTS和批量生成
+        """
+    )
+    
+    parser.add_argument(
+        '--tts', 
+        action='store_true',
+        help='执行飞镜转TTS功能'
+    )
+    
+    parser.add_argument(
+        '--batch', 
+        action='store_true',
+        help='执行批量图片生成功能'
+    )
+    
+    parser.add_argument(
+        '--download', 
+        action='store_true',
+        help='从数据库下载飞镜图片'
+    )
+    
+    parser.add_argument(
+        '--stats', 
+        action='store_true',
+        help='只显示统计信息'
+    )
+    
+    parser.add_argument(
+        '--config', 
+        type=str,
+        help='指定配置文件路径'
+    )
+    
+    parser.add_argument(
+        '--voice', 
+        type=str,
+        default='zh-CN-YunzeNeural',
+        help='指定TTS语音名称 (默认: zh-CN-YunzeNeural)'
+    )
+    
+    parser.add_argument(
+        '--model', 
+        type=str,
+        default='3.1',
+        help='指定图片生成模型 (默认: 3.1)'
+    )
+    
+    parser.add_argument(
+        '--ratio', 
+        type=str,
+        default='9:16',
+        help='指定图片比例 (默认: 9:16)'
+    )
+    
+    parser.add_argument(
+        '--timeout', 
+        type=int,
+        default=3600,
+        help='图片生成超时时间(秒) (默认: 3600)'
+    )
+    
+    return parser.parse_args()
+
+async def main():
+    """主函数"""
+    # 解析命令行参数
+    args = parse_arguments()
+    
     # 创建插件实例
-    jimeng = JimengPlugin()
+    jimeng = JimengPlugin(args.config)
     
     try:
         # 显示统计信息
         stats = jimeng.get_stats()
         logger.info(f"[Main] 插件统计信息: {stats}")
         
-        # submit_id = "6dedc742-d8c2-45d4-9daf-7965916e89aa"
-        # filename = "分镜1"
-        # image_urls = jimeng.api_client.get_generated_images(submit_id)
-        # if image_urls is not None:
-        #     jimeng.image_processor.download_image(filename, image_urls)
-        #     logger.info(f"[JimengPlugin] {submit_id} 已下载图片: {filename}")
-        # exit(0)
-        jimeng.fenjing_to_tts()
-        # exit(0)
-        # jimeng.download_feijing_from_db()
-        # # 批量处理飞镜配置
-        success = jimeng.process_feijing_batch()
+        # 如果只显示统计信息，则退出
+        if args.stats:
+            logger.info("[Main] 统计信息显示完成")
+            return
         
-        if success:
-            logger.info("[Main] 批量处理成功完成")
-        else:
-            logger.error("[Main] 批量处理失败")
-            exit(1)
+        # 执行飞镜转TTS
+        if args.tts:
+            logger.info("[Main] 开始执行飞镜转TTS...")
+            jimeng.fenjing_to_tts(voice_name=args.voice)
+            logger.info("[Main] 飞镜转TTS完成")
+        
+        # 从数据库下载飞镜图片
+        if args.download:
+            logger.info("[Main] 开始从数据库下载飞镜图片...")
+            await jimeng.download_feijing_from_db()
+            logger.info("[Main] 数据库下载完成")
+        
+        # 执行批量图片生成
+        if args.batch:
+            logger.info("[Main] 开始执行批量图片生成...")
+            success = await jimeng.process_feijing_batch(
+                model=args.model,
+                ratio=args.ratio,
+                timeout=args.timeout
+            )
+            
+            if success:
+                logger.info("[Main] 批量图片生成成功完成")
+            else:
+                logger.error("[Main] 批量图片生成失败")
+                exit(1)
+        
+        # 如果没有指定任何操作，默认执行TTS和批量生成
+        if not any([args.tts, args.batch, args.download, args.stats]):
+            logger.info("[Main] 未指定操作，执行默认流程...")
+            
+            # 执行飞镜转TTS
+            logger.info("[Main] 开始执行飞镜转TTS...")
+            jimeng.fenjing_to_tts(voice_name=args.voice)
+            logger.info("[Main] 飞镜转TTS完成")
+            
+            # 执行批量图片生成
+            logger.info("[Main] 开始执行批量图片生成...")
+            success = await jimeng.process_feijing_batch(
+                model=args.model,
+                ratio=args.ratio,
+                timeout=args.timeout
+            )
+            
+            if success:
+                logger.info("[Main] 批量图片生成成功完成")
+            else:
+                logger.error("[Main] 批量图片生成失败")
+                exit(1)
             
     except KeyboardInterrupt:
         logger.info("[Main] 用户中断程序")
@@ -705,5 +826,13 @@ if __name__ == "__main__":
         exit(1)
     finally:
         # 清理资源
-        jimeng.cleanup()
+        await jimeng.cleanup()
         logger.info("[Main] 程序结束")
+
+def run_main():
+    """运行主函数的包装器"""
+    import asyncio
+    asyncio.run(main())
+
+if __name__ == "__main__":
+    run_main()
