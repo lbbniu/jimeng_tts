@@ -1,7 +1,7 @@
 import json
 import time
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Any, Tuple
 from pathlib import Path
 from tortoise import Tortoise, fields, models
 from tortoise.contrib.pydantic import pydantic_model_creator
@@ -97,7 +97,7 @@ class ImageStorage:
             self._initialized = False
             logger.info("[ImageStorage] 数据库连接已关闭")
     
-    async def store_image(self, img_id: str, metadata: Optional[Dict[str, Any]] = None, status: int = 0) -> bool:
+    async def store_image(self, img_id: str, metadata: Dict[str, Any] | None = None, status: int = 0) -> bool:
         """存储图片信息
         
         Args:
@@ -143,7 +143,7 @@ class ImageStorage:
         finally:
             self._stats["total_time"] += time.time() - start_time
     
-    async def store_images_batch(self, images_data: List[Tuple[str, Optional[Dict[str, Any]], int]]) -> int:
+    async def store_images_batch(self, images_data: List[Tuple[str, Dict[str, Any] | None, int]]) -> int:
         """批量存储图片信息
         
         Args:
@@ -196,8 +196,8 @@ class ImageStorage:
         finally:
             self._stats["total_time"] += time.time() - start_time
     
-    async def update_image(self, img_id: str, urls: Optional[List[str]] = None, 
-                          status: Optional[int] = None, file_size: Optional[int] = None) -> bool:
+    async def update_image(self, img_id: str, urls: List[str] | None = None, 
+                          status: int | None = None, file_size: int | None = None) -> bool:
         """更新图片信息
         
         Args:
@@ -239,7 +239,7 @@ class ImageStorage:
         finally:
             self._stats["total_time"] += time.time() - start_time
     
-    async def get_image(self, img_id: str, check_expired: bool = True) -> Optional[Dict[str, Any]]:
+    async def get_image(self, img_id: str, check_expired: bool = True) -> Dict[str, Any] | None:
         """获取图片信息
         
         Args:
@@ -247,7 +247,7 @@ class ImageStorage:
             check_expired: 是否检查过期
             
         Returns:
-            Optional[Dict[str, Any]]: 图片信息字典
+            Dict[str, Any] | None: 图片信息字典
         """
         start_time = time.time()
         try:

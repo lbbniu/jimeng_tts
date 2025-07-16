@@ -70,8 +70,7 @@ class AudioProcessor:
             speech_config.speech_synthesis_voice_name = voice_name
             
             # 创建音频输出配置
-            audio_filename = f"{filename}.mp3"
-            audio_config = speechsdk.audio.AudioOutputConfig(filename=audio_filename)
+            audio_config = speechsdk.audio.AudioOutputConfig(filename=filename)
             
             # 创建字幕生成器
             submaker = SubMaker()
@@ -103,11 +102,11 @@ class AudioProcessor:
             # 执行语音合成
             logger.info(f"[AudioProcessor] 开始合成语音: {text[:50]}...")
             speech_synthesis_result = speech_synthesizer.speak_text_async(text).get()
-            reason = speech_synthesis_result.reason
+            reason = speech_synthesis_result.reason # type: ignore
             
             # 处理合成结果
             if reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                logger.info(f"[AudioProcessor] 语音合成成功: {audio_filename}")
+                logger.info(f"[AudioProcessor] 语音合成成功: {filename}")
                 
                 # 生成字幕文件
                 if generate_srt:
@@ -118,7 +117,7 @@ class AudioProcessor:
                 return True
                 
             elif reason == speechsdk.ResultReason.Canceled:
-                cancellation_details = speech_synthesis_result.cancellation_details
+                cancellation_details = speech_synthesis_result.cancellation_details # type: ignore
                 logger.error(f"[AudioProcessor] 语音合成被取消: {cancellation_details.reason}")
                 
                 if cancellation_details.reason == speechsdk.CancellationReason.Error:
@@ -151,11 +150,10 @@ class AudioProcessor:
             if merge_words > 0:
                 submaker.merge_cues(merge_words)
             
-            # 生成SRT文件
-            srt_filename = f"{filename}.srt"
-            srt_content = submaker.get_srt()
-            
+            # 生成SRT文件, 扩展名改为srt
+            srt_filename = filename.replace(".mp3", ".srt")
             with open(srt_filename, "w", encoding='utf-8') as f:
+                srt_content = submaker.get_srt()
                 f.write(srt_content)
             
             logger.info(f"[AudioProcessor] 字幕文件已生成: {srt_filename}")
@@ -164,31 +162,3 @@ class AudioProcessor:
         except Exception as e:
             logger.error(f"[AudioProcessor] 生成字幕文件失败: {e}")
             return False
-    
-    def get_available_voices(self) -> list:
-        """获取可用的语音列表（需要Azure语音服务支持）
-        
-        Returns:
-            list: 可用语音列表
-        """
-        # 这里可以扩展为从Azure获取可用语音列表
-        # 目前返回常用的中文语音
-        return [
-            'zh-CN-YunzeNeural',  # 云泽（男声）
-            'zh-CN-XiaoxiaoNeural',  # 晓晓（女声）
-            'zh-CN-YunxiNeural',  # 云希（男声）
-            'zh-CN-XiaoyiNeural',  # 晓伊（女声）
-            'zh-CN-YunjianNeural',  # 云健（男声）
-        ]
-    
-    def validate_voice_name(self, voice_name: str) -> bool:
-        """验证语音名称是否有效
-        
-        Args:
-            voice_name: 语音名称
-            
-        Returns:
-            bool: 是否有效
-        """
-        available_voices = self.get_available_voices()
-        return voice_name in available_voices 

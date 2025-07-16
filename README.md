@@ -115,6 +115,7 @@ python jimeng.py [选项]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--config` | `config.json` | 指定配置文件路径 |
+| `--feijing` | `feijing.json` | 指定飞镜配置文件路径 |
 | `--voice` | `zh-CN-YunzeNeural` | 指定TTS语音名称 |
 | `--model` | `3.1` | 指定图片生成模型 |
 | `--ratio` | `9:16` | 指定图片比例 |
@@ -162,14 +163,24 @@ python jimeng.py --download
 python jimeng.py --stats
 ```
 
-#### 9. 默认行为（执行TTS和批量生成）
+#### 9. 使用自定义飞镜配置文件
+```bash
+python jimeng.py --tts --feijing custom_feijing.json
+```
+
+#### 10. 同时指定配置文件和飞镜文件
+```bash
+python jimeng.py --config config.json --feijing feijing.json
+```
+
+#### 11. 默认行为（执行TTS和批量生成）
 ```bash
 python jimeng.py
 ```
 
 ### 飞镜配置文件
 
-创建 `feijing.json` 文件来配置飞镜项目：
+创建 `feijing.json` 文件来配置飞镜项目。您可以通过 `--feijing` 参数指定自定义的飞镜配置文件路径：
 
 ```json
 [
@@ -184,6 +195,23 @@ python jimeng.py
     "原文": "这是分镜2的文本内容"
   }
 ]
+```
+
+**配置文件字段说明：**
+- `编号`: 分镜的唯一标识符，用于生成文件名
+- `提示词`: 用于AI图片生成的描述文本
+- `原文`: 用于TTS语音合成的文本内容
+
+**使用自定义配置文件：**
+```bash
+# 使用自定义飞镜配置文件进行TTS
+python jimeng.py --tts --feijing my_feijing.json
+
+# 使用自定义飞镜配置文件进行批量图片生成
+python jimeng.py --batch --feijing my_feijing.json
+
+# 同时指定配置文件和飞镜文件
+python jimeng.py --config config.json --feijing feijing.json
 ```
 
 ## 支持的配置
@@ -249,6 +277,8 @@ jimeng/
 3. **磁盘空间**：确保有足够的磁盘空间存储生成的文件
 4. **权限**：确保有写入文件的权限
 5. **配额限制**：注意Azure语音服务的配额限制
+6. **配置文件**：确保飞镜配置文件的JSON格式正确，包含必要的字段
+7. **文件路径**：使用 `--feijing` 参数时，确保指定的文件路径存在且可读
 
 ## 更新计划
 
@@ -257,6 +287,8 @@ jimeng/
 3. 优化批量处理性能
 4. 添加更多语音选项
 5. 支持更多图片格式
+6. 支持飞镜配置文件的动态加载和热更新
+7. 添加配置文件验证和错误提示功能
 
 ## 帮助信息
 
