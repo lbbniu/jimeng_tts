@@ -68,23 +68,23 @@ class Draft_folder:
         _deprecated_class_warning("Draft_folder", "DraftFolder")
         return DraftFolder(*args, **kwargs)
 
-class Jianying_controller:
-    """Deprecated: Use JianyingController instead."""
-    def __new__(cls, *args, **kwargs):
-        _deprecated_class_warning("Jianying_controller", "JianyingController")
-        return JianyingController(*args, **kwargs)
+# class Jianying_controller:
+#     """Deprecated: Use JianyingController instead."""
+#     def __new__(cls, *args, **kwargs):
+#         _deprecated_class_warning("Jianying_controller", "JianyingController")
+#         return JianyingController(*args, **kwargs)
 
-class Export_resolution:
-    """Deprecated: Use ExportResolution instead."""
-    def __new__(cls, *args, **kwargs):
-        _deprecated_class_warning("Export_resolution", "ExportResolution")
-        return ExportResolution(*args, **kwargs)
+# class Export_resolution:
+#     """Deprecated: Use ExportResolution instead."""
+#     def __new__(cls, *args, **kwargs):
+#         _deprecated_class_warning("Export_resolution", "ExportResolution")
+#         return ExportResolution(*args, **kwargs)
 
-class Export_framerate:
-    """Deprecated: Use ExportFramerate instead."""
-    def __new__(cls, *args, **kwargs):
-        _deprecated_class_warning("Export_framerate", "ExportFramerate")
-        return ExportFramerate(*args, **kwargs)
+# class Export_framerate:
+#     """Deprecated: Use ExportFramerate instead."""
+#     def __new__(cls, *args, **kwargs):
+#         _deprecated_class_warning("Export_framerate", "ExportFramerate")
+#         return ExportFramerate(*args, **kwargs)
 
 class Shrink_mode:
     """Deprecated: Use ShrinkMode instead."""
@@ -232,9 +232,9 @@ __all__ = [
     "ExtendMode",
     "ScriptFile",
     "DraftFolder",
-    "JianyingController",
-    "ExportResolution",
-    "ExportFramerate",
+    # "JianyingController",
+    # "ExportResolution",
+    # "ExportFramerate",
     "SEC",
     "tim",
     "trange",
@@ -242,9 +242,9 @@ __all__ = [
     # 向后兼容的snake_case类
     "Script_file",
     "Draft_folder",
-    "Jianying_controller",
-    "Export_resolution",
-    "Export_framerate",
+    # "Jianying_controller",
+    # "Export_resolution",
+    # "Export_framerate",
     "Shrink_mode",
     "Extend_mode",
     "Track_type",
