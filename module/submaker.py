@@ -63,8 +63,19 @@ class SubMaker:
 
         new_cues: List[srt.Subtitle] = []
         current_cue: srt.Subtitle = self.cues[0]
+        
+        def count_words(text: str) -> int:
+            """Count words in text, handling both Chinese and English text."""
+            # 对于中文字符，每个字符算作一个单位
+            # 对于英文，按空格分割计算单词数
+            chinese_chars = len([c for c in text if '\u4e00' <= c <= '\u9fff'])
+            english_words = len([word for word in text.split() if any(c.isalpha() for c in word)])
+            return chinese_chars + english_words
+        
         for cue in self.cues[1:]:
-            if len(current_cue.content.split()) + len(cue.content.split()) <= words:
+            current_word_count = count_words(current_cue.content)
+            cue_word_count = count_words(cue.content)
+            if current_word_count + cue_word_count <= words:
                 current_cue = srt.Subtitle(
                     index=current_cue.index,
                     start=current_cue.start,
@@ -74,7 +85,13 @@ class SubMaker:
             else:
                 new_cues.append(current_cue)
                 current_cue = cue
+        
         new_cues.append(current_cue)
+        
+        # 重新编号索引以保持连续性
+        for i, cue in enumerate(new_cues):
+            cue.index = i + 1
+            
         self.cues = new_cues
 
     def get_srt(self) -> str:

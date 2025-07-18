@@ -28,7 +28,8 @@ class AudioProcessor:
     def text_to_speech(self, filename: str, text: str, 
                       voice_name: str = 'zh-CN-YunzeNeural',
                       generate_srt: bool = True,
-                      merge_words: int = 10) -> bool:
+                      merge_words: int = 10,
+                      use_sentence_boundary: bool = True) -> bool:
         """文本转语音并生成字幕文件
         
         Args:
@@ -37,6 +38,7 @@ class AudioProcessor:
             voice_name: 语音名称，默认为中文云泽神经语音
             generate_srt: 是否生成SRT字幕文件
             merge_words: 字幕合并词数，用于优化剪映导入
+            use_sentence_boundary: 是否使用句子边界进行分句（推荐）
             
         Returns:
             bool: 是否成功生成音频和字幕
@@ -61,6 +63,13 @@ class AudioProcessor:
                 endpoint=os.environ.get('ENDPOINT')
             )
             
+            # 根据用户选择启用句子边界事件
+            if use_sentence_boundary:
+                speech_config.set_property(
+                    speechsdk.PropertyId.SpeechServiceResponse_RequestSentenceBoundary, 
+                    "true"
+                )
+            
             # 设置音频输出格式为高质量MP3
             speech_config.set_speech_synthesis_output_format(
                 speechsdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3
@@ -75,20 +84,48 @@ class AudioProcessor:
             # 创建字幕生成器
             submaker = SubMaker()
             
+            # 用于累积文本的变量
+            current_sentence = ""
+            sentence_start_offset = 0
+            
             # 定义词边界回调函数
             def speech_synthesizer_word_boundary_cb(evt: speechsdk.SpeechSynthesisWordBoundaryEventArgs):
                 """处理词边界事件，用于生成字幕"""
+                nonlocal current_sentence, sentence_start_offset
+                
                 # 将duration转换为100纳秒单位（与offset保持一致）
                 duration_in_100ns = int(evt.duration.total_seconds() * 10000000)
                 
-                submaker.feed(TTSChunk(
-                    type="WordBoundary",
-                    offset=evt.audio_offset,
-                    duration=duration_in_100ns,
-                    text=evt.text
-                ))
+                if not use_sentence_boundary:
+                    # 原始逻辑：每个词边界都创建字幕条目
+                    submaker.feed(TTSChunk(
+                        type="WordBoundary",
+                        offset=evt.audio_offset,
+                        duration=duration_in_100ns,
+                        text=evt.text
+                    ))
+                    logger.debug(f"[AudioProcessor] 词边界事件: {evt.text}")
+                    return
                 
-                logger.debug(f"[AudioProcessor] 词边界事件: {evt.text}")
+                # 句子边界逻辑
+                boundary_type = evt.boundary_type
+                boundary_type_str = "未知"
+                
+                if boundary_type == speechsdk.SpeechSynthesisBoundaryType.Word:
+                    boundary_type_str = "单词"
+                elif boundary_type == speechsdk.SpeechSynthesisBoundaryType.Punctuation:
+                    boundary_type_str = "标点"
+                    
+                elif boundary_type == speechsdk.SpeechSynthesisBoundaryType.Sentence:
+                    boundary_type_str = "句子"                    
+                    # 在句子结束时创建字幕条目
+                    submaker.feed(TTSChunk(
+                        type="WordBoundary",
+                        offset=evt.audio_offset,
+                        duration=duration_in_100ns,
+                        text=evt.text
+                    ))
+                    logger.info(f"[AudioProcessor] {boundary_type_str}边界: '{evt.text}'")
             
             # 创建语音合成器
             speech_synthesizer = speechsdk.SpeechSynthesizer(
@@ -107,6 +144,21 @@ class AudioProcessor:
             # 处理合成结果
             if reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
                 logger.info(f"[AudioProcessor] 语音合成成功: {filename}")
+                
+                # 处理最后一个未完成的句子（如果有的话）
+                if use_sentence_boundary and current_sentence.strip():
+                    # 估算最后一个句子的结束时间
+                    audio_duration = speech_synthesis_result.audio_duration  # type: ignore
+                    end_offset = int(audio_duration.total_seconds() * 10000000)
+                    
+                    submaker.feed(TTSChunk(
+                        type="WordBoundary",
+                        offset=sentence_start_offset,
+                        duration=end_offset - sentence_start_offset,
+                        text=current_sentence.strip()
+                    ))
+                    
+                    logger.debug(f"[AudioProcessor] 完成最后句子: {current_sentence.strip()}")
                 
                 # 生成字幕文件
                 if generate_srt:
