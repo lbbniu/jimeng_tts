@@ -237,7 +237,7 @@ class ScriptFile:
 
     def add_track(self, track_type: TrackType, track_name: Optional[str] = None, *,
                   mute: bool = False,
-                  relative_index: int = 0, absolute_index: Optional[int] = None) -> "ScriptFile":
+                  relative_index: int = 0, absolute_index: Optional[int] = None, flag: int = 0) -> "ScriptFile":
         """向草稿文件中添加一个指定类型、指定名称的轨道, 可以自定义轨道层级
 
         注意: 主视频轨道(最底层的视频轨道)上的视频片段必须从0s开始, 否则会被剪映强制对齐至0s.
@@ -267,7 +267,7 @@ class ScriptFile:
         if absolute_index is not None:
             render_index = absolute_index
 
-        self.tracks[track_name] = Track(track_type, track_name, render_index, mute)
+        self.tracks[track_name] = Track(track_type, track_name, render_index, mute, flag)
         return self
 
     def _get_track(self, segment_type: Type[BaseSegment], track_name: Optional[str]) -> Track:
