@@ -61,10 +61,6 @@ class AudioProcessor:
                 endpoint=os.environ.get('ENDPOINT')
             )
             
-            speech_config.set_property(
-                speechsdk.PropertyId.SpeechServiceResponse_RequestSentenceBoundary, 
-                "true"
-            )
             # 设置音频输出格式为高质量MP3
             speech_config.set_speech_synthesis_output_format(
                 speechsdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3
@@ -79,35 +75,19 @@ class AudioProcessor:
             # 创建字幕生成器
             submaker = SubMaker()
             
-            sentence_start_offset = 0
-            
             # 定义词边界回调函数
             def speech_synthesizer_word_boundary_cb(evt: speechsdk.SpeechSynthesisWordBoundaryEventArgs):
                 """处理词边界事件，用于生成字幕"""
                 # 将duration转换为100纳秒单位（与offset保持一致）
                 duration_in_100ns = int(evt.duration.total_seconds() * 10000000)
-
-                # # 原始逻辑：每个词边界都创建字幕条目
-                # submaker.feed(TTSChunk(
-                #     type="WordBoundary",
-                #     offset=evt.audio_offset,
-                #     duration=duration_in_100ns,
-                #     text=evt.text
-                # ))
-                # logger.debug(f"[AudioProcessor] 词边界事件: {evt.text}")
-                # return
-                
-                # 句子边界逻辑
                 boundary_type = evt.boundary_type
-                if boundary_type == speechsdk.SpeechSynthesisBoundaryType.Punctuation:
-                    # 在句子结束时创建字幕条目
-                    submaker.feed(TTSChunk(
-                        type="WordBoundary",
-                        offset=evt.audio_offset,
-                        duration=duration_in_100ns,
-                        text=evt.text
-                    ))
-                logger.info(f"[AudioProcessor] {boundary_type} 边界: '{evt.text}'")
+                submaker.feed(TTSChunk(
+                    type="Word" if boundary_type == speechsdk.SpeechSynthesisBoundaryType.Word else "Punctuation",
+                    offset=evt.audio_offset,
+                    duration=duration_in_100ns,
+                    text=evt.text
+                ))
+                logger.debug(f"[AudioProcessor] {boundary_type} 边界: '{evt.text}'")
             
             # 创建语音合成器
             speech_synthesizer = speechsdk.SpeechSynthesizer(
@@ -164,19 +144,14 @@ class AudioProcessor:
             bool: 是否成功生成字幕文件
         """
         try:
-            # 优化字幕：合并短字幕，避免剪映导入问题
-            if merge_words > 0:
-                submaker.merge_cues(merge_words)
-            
-            # 生成SRT文件, 扩展名改为srt
+            submaker.merge_cues(merge_words)
+            # 生成原始SRT文件
             srt_filename = filename.replace(".mp3", ".srt")
             with open(srt_filename, "w", encoding='utf-8') as f:
                 srt_content = submaker.get_srt()
                 f.write(srt_content)
-            
-            logger.info(f"[AudioProcessor] 字幕文件已生成: {srt_filename}")
+            logger.info(f"[AudioProcessor] 原始字幕文件已生成: {srt_filename}")
             return True
-            
         except Exception as e:
             logger.error(f"[AudioProcessor] 生成字幕文件失败: {e}")
             return False

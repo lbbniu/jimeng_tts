@@ -8,3 +8,4 @@ feijing.json
 downloads
 logs
 .env
+!pyJianYingDraft/*.json

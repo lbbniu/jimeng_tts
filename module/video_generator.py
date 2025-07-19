@@ -256,7 +256,7 @@ class VideoGenerator:
                 video_material = materials['images'][selected_image]
                 audio_material = materials['audios'][audio_file]
                 self._add_video_segment(script, scene_name, video_material, video_track_name, start_us, duration_us)
-                self._add_audio_segment(script, scene_name, audio_material, audio_track_name, start_us, duration_us)
+                self._add_audio_segment(script, scene_name, audio_material, audio_track_name, start_us, duration_us, volume=3.16)  # 增加10分贝
                 self._add_subtitle_segment(script, scene_name, subtitle_file, subtitle_track_name, current_time_us / 1_000_000)
                 
                 # 严格对齐下一个片段的起点，使用微秒计算避免精度问题
@@ -373,7 +373,6 @@ class VideoGenerator:
             # 更新关键字段
             current_time = int(time.time() * 1e6)
             meta_info.update({
-                "draft_cover": "",
                 "draft_name": draft_name,
                 "draft_fold_path": draft_folder,
                 "draft_root_path": os.path.dirname(draft_folder),
@@ -476,7 +475,7 @@ class VideoGenerator:
             raise
 
     def _add_audio_segment(self, script, scene_name: str, audio_material: AudioMaterial,
-                          audio_track_name: str, start_us: int, duration_us: int) -> None:
+                          audio_track_name: str, start_us: int, duration_us: int, volume: float = 1.0) -> None:
         """
         添加音频片段到指定轨道
         
@@ -487,15 +486,17 @@ class VideoGenerator:
             audio_track_name: 音频轨道名称
             start_us: 开始时间（微秒）
             duration_us: 持续时间（微秒）
+            volume: 音量倍数，1.0为原始音量，2.0为增加10分贝
         """
         try:
             audio_segment = draft.AudioSegment(
                 audio_material,
                 trange(start_us, duration_us),
-                source_timerange=trange(0, duration_us)
+                source_timerange=trange(0, duration_us),
+                volume=volume  # 设置音量
             )
             script.add_segment(audio_segment, track_name=audio_track_name)
-            logger.info(f"成功添加音频片段: {scene_name} (素材ID: {audio_material.material_id})")
+            logger.info(f"成功添加音频片段: {scene_name} (素材ID: {audio_material.material_id}, 音量: {volume:.1f}x)")
         except Exception as e:
             logger.error(f"添加音频片段失败 {scene_name}: {e}")
             raise
@@ -563,7 +564,7 @@ class VideoGenerator:
                         width=60.0  # 描边宽度
                     ),
                     clip_settings=draft.ClipSettings(
-                        transform_y=-0.6  # 位置稍微偏下
+                        transform_y=-0.2  # 位置稍微偏下
                     )
                 )
                 
