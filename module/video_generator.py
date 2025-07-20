@@ -13,6 +13,7 @@ from typing import List, Dict, Tuple, Any
 import sys
 import shutil
 import pymediainfo
+from dataclasses import dataclass
 
 # 添加本地 pyJianYingDraft 模块路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pyJianYingDraft'))
@@ -23,6 +24,13 @@ from pyJianYingDraft.metadata import FontType
 from pyJianYingDraft.metadata import OutroType, VideoSceneEffectType
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AudioSubtitlePair:
+    """音频和字幕文件对"""
+    audio_file: str
+    subtitle_file: str
 
 
 class VideoGenerator:
@@ -137,7 +145,7 @@ class VideoGenerator:
         logger.info(f"找到 {len(scene_files)} 个场景，共 {sum(len(files) for files in scene_files.values())} 张图片")
         return scene_files
     
-    def get_audio_subtitle_files(self, scene_dir: str) -> Dict[str, Tuple[str, str]]:
+    def get_audio_subtitle_files(self, scene_dir: str) -> Dict[str, AudioSubtitlePair]:
         """
         获取音频和字幕文件
         
@@ -160,7 +168,7 @@ class VideoGenerator:
             srt_file = scene_path / f"{scene_name}.srt"
             
             if srt_file.exists():
-                audio_subtitle_files[scene_name] = (str(mp3_file), str(srt_file))
+                audio_subtitle_files[scene_name] = AudioSubtitlePair(str(mp3_file), str(srt_file))
             else:
                 logger.warning(f"未找到对应的字幕文件: {srt_file}")
         
@@ -205,9 +213,6 @@ class VideoGenerator:
             # template_path = "/Users/lbbniu/Movies/JianyingPro/02孩子为你自己读书/draft_content.json"
             # script = draft.ScriptFile.load_template(template_path)
             
-            # 收集并添加素材到草稿文件夹（在创建草稿之前）
-            materials = self._collect_and_add_materials(script, scene_files, audio_subtitle_files, str(draft_file))
-            
             # 创建视频、音频、字幕和特效轨道
             video_track_name = "main_video"
             audio_track_name = "main_audio"
@@ -234,7 +239,9 @@ class VideoGenerator:
                 selected_image = random.choice(image_files)
                 
                 # 获取音频和字幕文件
-                audio_file, subtitle_file = audio_subtitle_files[scene_name]
+                audio_subtitle_pair = audio_subtitle_files[scene_name]
+                audio_file = audio_subtitle_pair.audio_file
+                subtitle_file = audio_subtitle_pair.subtitle_file
                 
                 # 获取音频时长（秒）
                 audio_duration = self.get_audio_duration(audio_file)
@@ -249,11 +256,9 @@ class VideoGenerator:
                 logger.info(f"处理场景 {scene_name}: 图片={selected_image}, 音频={audio_file}, 字幕={subtitle_file}, 时长={audio_duration:.6f}秒")
                 logger.info(f"时间区间: start={start_us}, duration={duration_us}")
                 
-                # 添加视频、音频和字幕片段（使用预先创建的素材对象）
-                video_material = materials['images'][selected_image]
-                audio_material = materials['audios'][audio_file]
-                self._add_video_segment(script, scene_name, video_material, video_track_name, start_us, duration_us)
-                self._add_audio_segment(script, scene_name, audio_material, audio_track_name, start_us, duration_us, volume=3.16)  # 增加10分贝
+                # 添加视频、音频和字幕片段（直接添加素材到资源库）
+                self._add_video_segment(script, scene_name, selected_image, video_track_name, start_us, duration_us)
+                self._add_audio_segment(script, scene_name, audio_file, audio_track_name, start_us, duration_us, volume=3.16)  # 增加10分贝
                 self._add_subtitle_segment(script, scene_name, subtitle_file, subtitle_track_name, current_time_us / 1_000_000)
                 
                 # 严格对齐下一个片段的起点，使用微秒计算避免精度问题
@@ -275,7 +280,7 @@ class VideoGenerator:
                 logger.error(f"添加雪花特效失败: {e}")
             
             # 保存最终的草稿内容
-            self._save_draft(script, str(draft_file))
+            self._save_draft(script, str(draft_file), scene_files, audio_subtitle_files)
             
             logger.info(f"视频草稿生成完成: {draft_file}")
             return str(draft_file)
@@ -314,7 +319,7 @@ class VideoGenerator:
             random_seed=random_seed
         )
 
-    def _save_draft(self, script, output_path: str) -> None:
+    def _save_draft(self, script, output_path: str, scene_files: Dict[str, List[str]], audio_subtitle_files: Dict[str, AudioSubtitlePair]) -> None:
         """保存剪映草稿文件夹"""
         try:
             # 确保输出路径是文件夹，而不是文件
@@ -324,21 +329,20 @@ class VideoGenerator:
             template_path = "/Users/lbbniu/Movies/JianyingPro/人物故事模板"
             if os.path.exists(template_path):
                 print(f"使用指定的草稿模板: {template_path}")
-                self._create_draft_from_template(script, template_path, draft_folder, draft_name)
+                self._create_draft_from_template(script, template_path, draft_folder, draft_name, scene_files, audio_subtitle_files)
             else:
                 # 如果模板不存在，回退到手动创建
                 print(f"模板路径不存在: {template_path}")
                 print("回退到手动创建草稿文件夹")
-                self._create_draft_folder_manually(script, draft_folder, draft_name)
+                self._create_draft_folder_manually(script, draft_folder, draft_name, scene_files, audio_subtitle_files)
             
             print(f"✅ 成功创建剪映草稿文件夹: {draft_folder}")
             print(f"   文件夹包含 {len(os.listdir(draft_folder))} 个文件")
-            
         except Exception as e:
             print(f"❌ 保存草稿失败: {e}")
             raise
     
-    def _create_draft_from_template(self, script, template_path: str, draft_folder: str, draft_name: str) -> None:
+    def _create_draft_from_template(self, script, template_path: str, draft_folder: str, draft_name: str, scene_files: Dict[str, List[str]], audio_subtitle_files: Dict[str, AudioSubtitlePair]) -> None:
         """从指定模板创建草稿文件夹"""
         
         # 删除现有的草稿文件夹（如果存在）
@@ -353,15 +357,14 @@ class VideoGenerator:
         script.dump(draft_content_path)
         
         # 更新元数据中的草稿名称和路径
-        self._update_draft_metadata(draft_folder, draft_name, script)
+        self._update_draft_metadata(draft_folder, draft_name, scene_files, audio_subtitle_files)
         
         # 生成虚拟存储文件
-        self._generate_draft_virtual_store(script, draft_folder, draft_name)
+        self._generate_draft_virtual_store(draft_folder, draft_name)
     
-    def _update_draft_metadata(self, draft_folder: str, draft_name: str, script) -> None:
+    def _update_draft_metadata(self, draft_folder: str, draft_name: str, scene_files: Dict[str, List[str]], audio_subtitle_files: Dict[str, AudioSubtitlePair]) -> None:
         """更新草稿元数据文件"""
         meta_info_path = os.path.join(draft_folder, "draft_meta_info.json")
-        
         if os.path.exists(meta_info_path):
             # 读取现有元数据
             with open(meta_info_path, "r", encoding="utf-8") as f:
@@ -379,7 +382,7 @@ class VideoGenerator:
             })
             
             # 更新素材信息
-            self._update_draft_materials_info(meta_info, script, current_time)
+            self._update_draft_materials_info(meta_info, current_time, scene_files, audio_subtitle_files)
             
             # 写回文件
             with open(meta_info_path, "w", encoding="utf-8") as f:
@@ -387,7 +390,7 @@ class VideoGenerator:
         else:
             logger.warning(f"元数据文件不存在: {meta_info_path}")
     
-    def _create_draft_folder_manually(self, script, draft_folder: str, draft_name: str) -> None:
+    def _create_draft_folder_manually(self, script, draft_folder: str, draft_name: str, scene_files: Dict[str, List[str]], audio_subtitle_files: Dict[str, AudioSubtitlePair]) -> None:
         """手动创建草稿文件夹结构（当没有模板时使用）"""
         # 创建草稿文件夹（如果存在则删除重建）
         if os.path.exists(draft_folder):
@@ -398,8 +401,11 @@ class VideoGenerator:
         draft_content_path = os.path.join(draft_folder, "draft_content.json")
         script.dump(draft_content_path)
         
+        # 更新草稿元数据
+        self._update_draft_metadata(draft_folder, draft_name, scene_files, audio_subtitle_files)
+        
         # 生成虚拟存储文件
-        self._generate_draft_virtual_store(script, draft_folder, draft_name)
+        self._generate_draft_virtual_store(draft_folder, draft_name)
 
     def _add_statement_text(self, script, statement_track_name: str, total_duration: float) -> None:
         """
@@ -440,7 +446,7 @@ class VideoGenerator:
             # 声明文字失败不应该阻止整个流程
             logger.warning("跳过底部声明文字")
 
-    def _add_video_segment(self, script: draft.ScriptFile, scene_name: str, video_material: draft.VideoMaterial, 
+    def _add_video_segment(self, script: draft.ScriptFile, scene_name: str, video_material_path: str, 
                           video_track_name: str, start_us: int, duration_us: int) -> None:
         """
         添加视频片段到指定轨道，可选择添加出场放大动画
@@ -448,13 +454,17 @@ class VideoGenerator:
         Args:
             script: ScriptFile对象
             scene_name: 场景名称
-            video_material: 视频素材对象
+            video_material_path: 视频素材文件路径
             video_track_name: 视频轨道名称
             start_us: 开始时间（微秒）
             duration_us: 持续时间（微秒）
             use_animation: 是否使用出场动画，默认True
         """
         try:
+            # 直接使用文件路径创建视频素材对象
+            video_material = draft.VideoMaterial(video_material_path)
+            script.add_material(video_material) # 添加到资源库
+            
             video_segment = draft.VideoSegment(
                 video_material, 
                 trange(start_us, duration_us),
@@ -471,7 +481,7 @@ class VideoGenerator:
             logger.error(f"添加视频片段失败 {scene_name}: {e}")
             raise
 
-    def _add_audio_segment(self, script, scene_name: str, audio_material: draft.AudioMaterial,
+    def _add_audio_segment(self, script, scene_name: str, audio_material_path: str,
                           audio_track_name: str, start_us: int, duration_us: int, volume: float = 1.0) -> None:
         """
         添加音频片段到指定轨道
@@ -479,13 +489,17 @@ class VideoGenerator:
         Args:
             script: ScriptFile对象
             scene_name: 场景名称
-            audio_material: 音频素材对象
+            audio_material_path: 音频素材文件路径
             audio_track_name: 音频轨道名称
             start_us: 开始时间（微秒）
             duration_us: 持续时间（微秒）
             volume: 音量倍数，1.0为原始音量，2.0为增加10分贝
         """
         try:
+            # 直接使用文件路径创建音频素材对象
+            audio_material = draft.AudioMaterial(audio_material_path)
+            script.add_material(audio_material) # 添加到资源库
+            
             audio_segment = draft.AudioSegment(
                 audio_material,
                 trange(start_us, duration_us),
@@ -639,61 +653,7 @@ class VideoGenerator:
         # 对齐到微秒精度，与音频时长保持一致
         return round(total_seconds, 6)
 
-    def _collect_and_add_materials(self, script, scene_files: Dict[str, List[str]], 
-                                  audio_subtitle_files: Dict[str, Tuple[str, str]], 
-                                  draft_folder: str) -> Dict[str, Any]:
-        """
-        收集所有素材文件并添加到草稿素材库
-        
-        Args:
-            script: ScriptFile对象
-            scene_files: 场景图片文件字典
-            audio_subtitle_files: 音频字幕文件字典
-            draft_folder: 草稿文件夹路径
-            
-        Returns:
-            素材对象字典，用于后续创建片段时使用
-        """
-        materials = {
-            'images': {},  # {文件路径: VideoMaterial对象}
-            'audios': {}   # {文件路径: AudioMaterial对象}
-        }
-        
-        logger.info("开始收集并添加素材到素材库...")
-        
-        # 收集所有图片素材（直接使用原始文件路径）
-        image_count = 0
-        for scene_name, image_files in scene_files.items():
-            for image_file in image_files:
-                if image_file not in materials['images']:
-                    try:
-                        # 直接使用原始文件路径创建视频素材对象
-                        video_material = draft.VideoMaterial(image_file)
-                        script.add_material(video_material)
-                        materials['images'][image_file] = video_material
-                        image_count += 1
-                        logger.debug(f"添加图片素材: {image_file}")
-                    except Exception as e:
-                        logger.error(f"添加图片素材失败 {image_file}: {e}")
-        
-        # 收集所有音频素材（直接使用原始文件路径）
-        audio_count = 0
-        for scene_name, (audio_file, subtitle_file) in audio_subtitle_files.items():
-            if audio_file not in materials['audios']:
-                try:
-                    # 直接使用原始文件路径创建音频素材对象
-                    audio_material = draft.AudioMaterial(audio_file)
-                    script.add_material(audio_material)
-                    materials['audios'][audio_file] = audio_material
-                    audio_count += 1
-                    logger.debug(f"添加音频素材: {audio_file}")
-                except Exception as e:
-                    logger.error(f"添加音频素材失败 {audio_file}: {e}")
-        
-        logger.info(f"素材库添加完成: {image_count} 个图片素材, {audio_count} 个音频素材")
-        return materials
-
-    def _update_draft_materials_info(self, meta_info: dict, script, current_time: int) -> None:
+    def _update_draft_materials_info(self, meta_info: dict, current_time: int, scene_files: Dict[str, List[str]], audio_subtitle_files: Dict[str, AudioSubtitlePair]) -> None:
         """
         更新草稿元数据中的素材信息
         
@@ -701,42 +661,47 @@ class VideoGenerator:
             meta_info: 元数据字典
             script: ScriptFile对象
             current_time: 当前时间戳（微秒）
+            scene_files: 场景图片文件字典
+            audio_subtitle_files: 音频字幕文件字典
         """
         try:
             # 收集所有素材信息
             materials_info = []
             
-            # 添加视频素材
-            for material in script.materials.videos:
-                # 获取文件的实际创建时间
-                file_creation_time = self.get_file_creation_time(material.path)
-                materials_info.append({
-                    "create_time": file_creation_time,
-                    "duration": 5000000,
-                    "extra_info": material.material_name,
-                    "file_Path": material.path,
-                    "height": material.height,
-                    "id": str(uuid.uuid4()),
-                    "import_time": int(current_time/1e6),
-                    "import_time_ms": current_time,
-                    "item_source": 1,
-                    "md5": "",
-                    "metetype": material.material_type,
-                    "roughcut_time_range": {"duration": -1, "start": -1},
-                    "sub_time_range": {"duration": -1, "start": -1},
-                    "type": 0,
-                    "width": material.width
-                })
+            # 添加视频素材（从scene_files中获取）
+            for image_files in scene_files.values():
+                for image_file in image_files:
+                    # 获取文件的实际创建时间
+                    file_creation_time = self.get_file_creation_time(image_file)
+                    materials_info.append({
+                        "create_time": file_creation_time,
+                        "duration": 5000000,
+                        "extra_info": os.path.basename(image_file),
+                        "file_Path": image_file,
+                        "height": 1920,  # 默认高度
+                        "id": str(uuid.uuid4()),
+                        "import_time": int(current_time/1e6),
+                        "import_time_ms": current_time,
+                        "item_source": 1,
+                        "md5": "",
+                        "metetype": "video",
+                        "roughcut_time_range": {"duration": -1, "start": -1},
+                        "sub_time_range": {"duration": -1, "start": -1},
+                        "type": 0,
+                        "width": 1080  # 默认宽度
+                    })
             
-            # 添加音频素材
-            for material in script.materials.audios:
+            # 添加音频素材（从audio_subtitle_files中获取）
+            for audio_subtitle_pair in audio_subtitle_files.values():
+                # 获取音频时长
+                audio_duration = self.get_audio_duration(audio_subtitle_pair.audio_file)
                 # 获取文件的实际创建时间
-                file_creation_time = self.get_file_creation_time(material.path)
+                file_creation_time = self.get_file_creation_time(audio_subtitle_pair.audio_file)
                 materials_info.append({
                     "create_time": file_creation_time,
-                    "duration": material.duration,
-                    "extra_info": material.material_name,
-                    "file_Path": material.path,
+                    "duration": int(audio_duration * 1_000_000),  # 转换为微秒
+                    "extra_info": os.path.basename(audio_subtitle_pair.audio_file),
+                    "file_Path": audio_subtitle_pair.audio_file,
                     "height": 0,
                     "id": str(uuid.uuid4()),
                     "import_time": int(current_time/1e6),
@@ -744,11 +709,14 @@ class VideoGenerator:
                     "item_source": 1,
                     "md5": "",
                     "metetype": "music",
-                    "roughcut_time_range": {"duration": material.duration, "start": 0},
+                    "roughcut_time_range": {"duration": int(audio_duration * 1_000_000), "start": 0},
                     "sub_time_range": {"duration": -1, "start": -1},
                     "type": 0,
                     "width": 0
                 })
+            
+            # 按文件名 A-Z 排序
+            materials_info.sort(key=lambda x: x["extra_info"])
             
             # 更新元数据中的素材信息
             meta_info["draft_materials"] = [
@@ -787,12 +755,12 @@ class VideoGenerator:
         except Exception as e:
             logger.error(f"更新素材信息失败: {e}")
 
-    def _generate_draft_virtual_store(self, script, draft_folder: str, draft_name: str) -> None:
+    def _generate_draft_virtual_store(self, draft_folder: str, draft_name: str) -> None:
         """
         生成草稿虚拟存储文件 draft_virtual_store.json
         
         Args:
-            script: ScriptFile对象
+
             draft_folder: 草稿文件夹路径
             draft_name: 草稿名称
         """
