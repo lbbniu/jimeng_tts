@@ -14,6 +14,7 @@ from module import (
     ImageStorage,
     ImageProcessor,
     AudioProcessor,
+    VideoGenerator,
     TaskStatus,
     ConfigManager,
     ImageGenerationTask,
@@ -123,6 +124,9 @@ class JimengPlugin:
         
         # 初始化API客户端
         self.api_client = ApiClient(self.token_manager, self.config_manager.config, self.image_storage)
+        
+        # 初始化视频生成器
+        self.video_generator = VideoGenerator()
     
     async def generate_image(self, prompt: str, model: str | None = None, ratio: str | None = None) -> str | None:
         """生成单张图片
@@ -386,7 +390,7 @@ class JimengPlugin:
             base_dir = os.path.dirname(__file__)
             full_filename = os.path.join(base_dir, "downloads", self.download_subdir, f"{filename}.mp3")
             if os.path.exists(full_filename):
-                logger.info(f"[JimengPlugin] {full_filename} 已存在，跳过")
+                # logger.info(f"[JimengPlugin] {full_filename} 存在，跳过音频生成")
                 continue
                 
             try:
@@ -463,12 +467,63 @@ class JimengPlugin:
                         image_urls = results[task.result]
                         self.image_processor.download_image(number, image_urls)
                         download_count += 1
-                        logger.info(f"[JimengPlugin] 已下载图片: {number}")
+                        logger.info(f"[JimengPlugin] 已下载图片: {number} 图片数量: {len(image_urls)}")
                 except Exception as e:
                     logger.error(f"[JimengPlugin] 下载图片失败 (任务 {task.task_id}): {e}")
         
         logger.info(f"[JimengPlugin] 批量处理完成，共下载 {download_count} 组图片")
         return download_count > 0
+    
+    def generate_video_draft(self, 
+                           output_name: str | None = None,
+                           video_width: int = 1080,
+                           video_height: int = 1920,
+                           random_seed: int | None = None) -> str:
+        """生成视频草稿
+        
+        Args:
+            output_name: 输出文件名（默认使用飞镜配置文件名）
+            video_width: 视频宽度
+            video_height: 视频高度
+            random_seed: 随机种子
+            
+        Returns:
+            生成的草稿文件路径
+        """
+        try:
+            # 获取素材目录
+            base_dir = os.path.dirname(__file__)
+            scene_dir = os.path.join(base_dir, "downloads", self.download_subdir)
+            
+            if not os.path.exists(scene_dir):
+                logger.error(f"[JimengPlugin] 素材目录不存在: {scene_dir}")
+                return ""
+            
+            # 使用分镜配置文件名作为默认输出名
+            if output_name is None:
+                output_name = self.download_subdir
+            
+            logger.info(f"[JimengPlugin] 开始生成视频草稿，素材目录: {scene_dir}")
+            
+            # 生成视频草稿
+            draft_file = self.video_generator.create_video_draft_from_feijing(
+                feijing_dir=scene_dir,
+                output_name=output_name,
+                video_width=video_width,
+                video_height=video_height,
+                random_seed=random_seed
+            )
+            
+            if draft_file:
+                logger.info(f"[JimengPlugin] 视频草稿生成成功: {draft_file}")
+            else:
+                logger.error("[JimengPlugin] 视频草稿生成失败")
+            
+            return draft_file
+            
+        except Exception as e:
+            logger.error(f"[JimengPlugin] 生成视频草稿异常: {e}")
+            return ""
     
     async def cleanup(self) -> None:
         """清理资源"""
@@ -511,12 +566,15 @@ def parse_arguments():
         epilog="""
 使用示例:
   python jimeng.py --tts                    # 只执行飞镜转TTS
-  python jimeng.py --batch                  # 只执行批量图片生成
-  python jimeng.py --tts --batch            # 执行TTS和批量生成
+  python jimeng.py --images                 # 只执行批量图片生成
+  python jimeng.py --video                  # 只生成视频草稿
+  python jimeng.py --tts --images           # 执行TTS和批量生成
+  python jimeng.py --tts --images --video    # 执行TTS、批量生成和视频草稿
   python jimeng.py --download               # 从数据库下载飞镜图片
   python jimeng.py --stats                  # 只显示统计信息
   python jimeng.py --feijing custom.json    # 使用自定义飞镜配置文件
   python jimeng.py --config config.json --feijing feijing.json  # 同时指定配置文件和飞镜文件
+  python jimeng.py --video --video-width 1920 --video-height 1080  # 生成横屏视频草稿
   python jimeng.py                          # 默认执行TTS和批量生成
         """
     )
@@ -528,7 +586,7 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '--batch', 
+        '--images', 
         action='store_true',
         help='执行批量图片生成功能'
     )
@@ -585,6 +643,32 @@ def parse_arguments():
         help='图片生成超时时间(秒) (默认: 3600)'
     )
     
+    parser.add_argument(
+        '--video', 
+        action='store_true',
+        help='生成视频草稿'
+    )
+    
+    parser.add_argument(
+        '--video-width', 
+        type=int,
+        default=1080,
+        help='视频宽度 (默认: 1080)'
+    )
+    
+    parser.add_argument(
+        '--video-height', 
+        type=int,
+        default=1920,
+        help='视频高度 (默认: 1920)'
+    )
+    
+    parser.add_argument(
+        '--video-seed', 
+        type=int,
+        help='视频生成随机种子'
+    )
+    
     return parser.parse_args()
 
 async def main():
@@ -596,6 +680,10 @@ async def main():
     jimeng = JimengPlugin(args.config, args.feijing)
     
     try:
+        # results = await jimeng.wait_for_completion(["c424668f-7af5-4115-9736-86341497e471"], 3600)
+        # print(results)
+        # jimeng.image_processor.download_image("分镜1", results["c424668f-7af5-4115-9736-86341497e471"])
+        # return
         # 显示统计信息
         stats = jimeng.get_stats()
         logger.info(f"[Main] 插件统计信息: {stats}")
@@ -605,20 +693,20 @@ async def main():
             logger.info("[Main] 统计信息显示完成")
             return
         
-        # 执行飞镜转TTS
-        if args.tts:
-            logger.info("[Main] 开始执行飞镜转TTS...")
-            jimeng.process_to_tts(voice_name=args.voice)
-            logger.info("[Main] 飞镜转TTS完成")
-        
         # 从数据库下载飞镜图片
         if args.download:
             logger.info("[Main] 开始从数据库下载飞镜图片...")
             await jimeng.download_images_from_db()
             logger.info("[Main] 数据库下载完成")
+            
+        # 执行飞镜转TTS
+        if args.tts:
+            logger.info("[Main] 开始执行飞镜转TTS...")
+            jimeng.process_to_tts(voice_name=args.voice)
+            logger.info("[Main] 分镜转TTS完成")
         
         # 执行批量图片生成
-        if args.batch:
+        if args.images:
             logger.info("[Main] 开始执行批量图片生成...")
             success = await jimeng.process_images_batch(
                 model=args.model,
@@ -632,8 +720,23 @@ async def main():
                 logger.error("[Main] 批量图片生成失败")
                 exit(1)
         
+        # 生成视频草稿
+        if args.video:
+            logger.info("[Main] 开始生成视频草稿...")
+            draft_file = jimeng.generate_video_draft(
+                video_width=args.video_width,
+                video_height=args.video_height,
+                random_seed=args.video_seed
+            )
+            
+            if draft_file:
+                logger.info(f"[Main] 视频草稿生成成功: {draft_file}")
+            else:
+                logger.error("[Main] 视频草稿生成失败")
+                exit(1)
+        
         # 如果没有指定任何操作，默认执行TTS和批量生成
-        if not any([args.tts, args.batch, args.download, args.stats]):
+        if not any([args.stats, args.download, args.tts, args.images, args.video]):
             logger.info("[Main] 未指定操作，执行默认流程...")
             
             # 执行飞镜转TTS

@@ -263,11 +263,16 @@ class BackgroundFilling:
 
     def export_json(self) -> Dict[str, Any]:
         return {
-            "id": self.global_id,
-            "type": self.fill_type,
+            "album_image":"",
             "blur": self.blur,
             "color": self.color,
+            "id": self.global_id,
+            "image":"",
+            "image_id":"",
+            "image_name":"",
             "source_platform": 0,
+            "team_id":"",
+            "type": self.fill_type,
         }
 
 class VideoSegment(VisualSegment):

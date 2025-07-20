@@ -59,6 +59,7 @@ class SubMaker:
         if len(self.cues) == 0:
             return
 
+        end = None
         new_cues: List[srt.Subtitle] = []
         current_cue: srt.Subtitle | None = self.cues[0]       
         for cue in self.cues[1:]:
@@ -74,6 +75,8 @@ class SubMaker:
                 )
             elif current_cue is not None:
                 current_cue.proprietary = ""
+                current_cue.start = end if end else current_cue.start
+                end = current_cue.end
                 new_cues.append(current_cue)
                 current_cue = None
         

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Any
 import sys
 import shutil
+import pymediainfo
 
 # 添加本地 pyJianYingDraft 模块路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pyJianYingDraft'))
@@ -19,8 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pyJianYingDraf
 import pyJianYingDraft as draft
 from pyJianYingDraft import trange
 from pyJianYingDraft.metadata import FontType
-from pyJianYingDraft.local_materials import VideoMaterial, AudioMaterial
-from pyJianYingDraft.metadata import VideoSceneEffectType
+from pyJianYingDraft.metadata import OutroType, VideoSceneEffectType
 
 logger = logging.getLogger(__name__)
 
@@ -90,27 +90,20 @@ class VideoGenerator:
             音频时长（秒）
         """
         try:
-            import pymediainfo
             media_info = pymediainfo.MediaInfo.parse(audio_file)
             for track in media_info.tracks:
                 if track.track_type == 'Audio':
                     duration_ms = track.duration
                     if duration_ms:
-                        return duration_ms / 1000.0
-            
-            # 备用方法：使用 ffprobe（如果安装了ffmpeg）
-            import subprocess
-            result = subprocess.run([
-                'ffprobe', '-v', 'quiet', '-show_entries', 
-                'format=duration', '-of', 'csv=p=0', audio_file
-            ], capture_output=True, text=True)
-            if result.returncode == 0:
-                return float(result.stdout.strip())
-                
+                        duration = duration_ms / 1000.0
+                        # 对齐到微秒精度，避免浮点数精度问题
+                        return round(duration, 6)
         except Exception as e:
             logger.warning(f"无法获取音频时长 {audio_file}: {e}")
             
-        return 0.0
+        # 如果获取失败，返回默认值
+        logger.warning(f"使用默认音频时长: {audio_file}")
+        return 10.0  # 默认10秒
     
     def get_scene_files(self, scene_dir: str) -> Dict[str, List[str]]:
         """
@@ -245,11 +238,15 @@ class VideoGenerator:
                 
                 # 获取音频时长（秒）
                 audio_duration = self.get_audio_duration(audio_file)
-                # 转为微秒
+                # 转为微秒，使用精确计算
                 start_us = current_time_us
-                duration_us = int(audio_duration * 1_000_000)
+                duration_us = int(round(audio_duration * 1_000_000))
                 
-                logger.info(f"处理场景 {scene_name}: 图片={selected_image}, 音频={audio_file}, 字幕={subtitle_file}, 时长={audio_duration:.2f}秒")
+                # 时间对齐：确保时长是微秒的整数倍
+                # 剪映可能对时间进行了微调，我们也要保持一致
+                duration_us = max(1, duration_us)  # 确保至少1微秒
+                
+                logger.info(f"处理场景 {scene_name}: 图片={selected_image}, 音频={audio_file}, 字幕={subtitle_file}, 时长={audio_duration:.6f}秒")
                 logger.info(f"时间区间: start={start_us}, duration={duration_us}")
                 
                 # 添加视频、音频和字幕片段（使用预先创建的素材对象）
@@ -355,11 +352,11 @@ class VideoGenerator:
         draft_content_path = os.path.join(draft_folder, "draft_content.json")
         script.dump(draft_content_path)
         
-        # 生成虚拟存储文件
-        self._generate_draft_virtual_store(script, draft_folder, draft_name)
-        
         # 更新元数据中的草稿名称和路径
         self._update_draft_metadata(draft_folder, draft_name, script)
+        
+        # 生成虚拟存储文件
+        self._generate_draft_virtual_store(script, draft_folder, draft_name)
     
     def _update_draft_metadata(self, draft_folder: str, draft_name: str, script) -> None:
         """更新草稿元数据文件"""
@@ -443,7 +440,7 @@ class VideoGenerator:
             # 声明文字失败不应该阻止整个流程
             logger.warning("跳过底部声明文字")
 
-    def _add_video_segment(self, script, scene_name: str, video_material: VideoMaterial, 
+    def _add_video_segment(self, script: draft.ScriptFile, scene_name: str, video_material: draft.VideoMaterial, 
                           video_track_name: str, start_us: int, duration_us: int) -> None:
         """
         添加视频片段到指定轨道，可选择添加出场放大动画
@@ -466,7 +463,7 @@ class VideoGenerator:
                     scale_y=1.1   # Y轴缩放1.1倍
                 )
             )
-            from pyJianYingDraft.metadata import OutroType
+            video_segment.add_background_filling("color", 0)
             video_segment.add_animation(OutroType.放大, duration=duration_us)
             logger.info(f"成功添加视频片段: {scene_name} (素材ID: {video_material.material_id})，初始缩放110%，包含出场放大动画")
             script.add_segment(video_segment, track_name=video_track_name)
@@ -474,7 +471,7 @@ class VideoGenerator:
             logger.error(f"添加视频片段失败 {scene_name}: {e}")
             raise
 
-    def _add_audio_segment(self, script, scene_name: str, audio_material: AudioMaterial,
+    def _add_audio_segment(self, script, scene_name: str, audio_material: draft.AudioMaterial,
                           audio_track_name: str, start_us: int, duration_us: int, volume: float = 1.0) -> None:
         """
         添加音频片段到指定轨道
@@ -639,7 +636,8 @@ class VideoGenerator:
         milliseconds = int(ms_part)
         
         total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 1000.0
-        return total_seconds
+        # 对齐到微秒精度，与音频时长保持一致
+        return round(total_seconds, 6)
 
     def _collect_and_add_materials(self, script, scene_files: Dict[str, List[str]], 
                                   audio_subtitle_files: Dict[str, Tuple[str, str]], 
@@ -714,16 +712,16 @@ class VideoGenerator:
                 file_creation_time = self.get_file_creation_time(material.path)
                 materials_info.append({
                     "create_time": file_creation_time,
-                    "duration": material.duration,
+                    "duration": 5000000,
                     "extra_info": material.material_name,
                     "file_Path": material.path,
                     "height": material.height,
-                    "id": material.material_id,
+                    "id": str(uuid.uuid4()),
                     "import_time": int(current_time/1e6),
                     "import_time_ms": current_time,
                     "item_source": 1,
                     "md5": "",
-                    "metetype": "photo" if material.material_type == "photo" else "video",
+                    "metetype": material.material_type,
                     "roughcut_time_range": {"duration": -1, "start": -1},
                     "sub_time_range": {"duration": -1, "start": -1},
                     "type": 0,
@@ -740,7 +738,7 @@ class VideoGenerator:
                     "extra_info": material.material_name,
                     "file_Path": material.path,
                     "height": 0,
-                    "id": material.material_id,
+                    "id": str(uuid.uuid4()),
                     "import_time": int(current_time/1e6),
                     "import_time_ms": current_time,
                     "item_source": 1,
@@ -804,38 +802,16 @@ class VideoGenerator:
             current_time = int(time.time())
             current_time_us = int(time.time() * 1e6)
             
+            meta_info_path = os.path.join(draft_folder, "draft_meta_info.json")
+        
+            if not os.path.exists(meta_info_path):
+                return
+            # 读取现有元数据
+            with open(meta_info_path, "r", encoding="utf-8") as f:
+                meta_info = json.load(f)
+            
             # 收集所有素材信息
-            materials_info = []
-            
-            # 添加视频素材
-            for material in script.materials.videos:
-                # 获取文件的实际创建时间
-                file_creation_time = self.get_file_creation_time(material.path)
-                materials_info.append({
-                    "creation_time": file_creation_time,  # 转换为秒
-                    "display_name": material.material_name,
-                    "filter_type": 0,
-                    "id": material.material_id,
-                    "import_time": current_time,
-                    "import_time_us": current_time_us,
-                    "sort_sub_type": 0,
-                    "sort_type": 0
-                })
-            
-            # 添加音频素材
-            for material in script.materials.audios:
-                # 获取文件的实际创建时间
-                file_creation_time = self.get_file_creation_time(material.path)
-                materials_info.append({
-                    "creation_time": file_creation_time,  # 转换为秒
-                    "display_name": material.material_name,
-                    "filter_type": 0,
-                    "id": material.material_id,
-                    "import_time": current_time,
-                    "import_time_us": current_time_us,
-                    "sort_sub_type": 0,
-                    "sort_type": 0
-                })
+            materials_info = meta_info["draft_materials"][0]["value"]
             
             # 构建虚拟存储数据结构
             virtual_store_data = {
