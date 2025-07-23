@@ -75,7 +75,7 @@ class SubMaker:
                 )
             elif current_cue is not None:
                 current_cue.proprietary = ""
-                current_cue.start = end if end else current_cue.start
+                current_cue.start = end + srt.timedelta(milliseconds=1) if end else current_cue.start
                 end = current_cue.end
                 new_cues.append(current_cue)
                 current_cue = None
