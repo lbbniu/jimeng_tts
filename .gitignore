@@ -3,6 +3,7 @@ temp
 storage
 feijing.json
 *.json
+!config.example.json
 *.mp3
 *.srt
 downloads

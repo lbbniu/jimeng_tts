@@ -1,0 +1,102 @@
+{
+    "commands": {
+        "draw": "即梦"
+    },
+    "params": {
+        "v2_ratios": {
+            "21:9": {"width": 1195, "height": 512},
+            "16:9": {"width": 1024, "height": 576},
+            "3:2": {"width": 1024, "height": 682},
+            "4:3": {"width": 1024, "height": 768},
+            "1:1": {"width": 1024, "height": 1024},
+            "3:4": {"width": 768, "height": 1024},
+            "2:3": {"width": 682, "height": 1024},
+            "9:16": {"width": 576, "height": 1024}
+        },
+        "v3_ratios": {
+            "21:9": {"width": 2016, "height": 864},
+            "16:9": {"width": 1664, "height": 936},
+            "3:2": {"width": 1584, "height": 1056},
+            "4:3": {"width": 1472, "height": 1104},
+            "1:1": {"width": 1328, "height": 1328},
+            "3:4": {"width": 1104, "height": 1472},
+            "2:3": {"width": 1056, "height": 1584},
+            "9:16": {"width": 936, "height": 1664}
+        },
+        "default_ratio": "9:16",
+        "models": {
+            "3.1": {
+                "ratios": "v3_ratios",
+                "name": "图片 3.1",
+                "model_req_key": "high_aes_general_v30l_art_fangzhou:general_v3.0_18b",
+                "description": "丰富的美学多样性，画面更鲜明生动",
+                "features": ["新模型", "默认场景", "人脸交换", "背景绘画", "文本到图像生成", "ETTA", "角色生成"]
+            },
+            "3.0": {
+                "ratios": "v3_ratios",
+                "name": "图片 3.0",
+                "model_req_key": "high_aes_general_v30l:general_v3.0_18b",
+                "description": "影视质感，文字更准，直出2k高清图",
+                "features": ["新模型", "默认场景", "人脸交换", "背景绘画", "文本到图像生成", "ETTA", "角色生成"]
+            },
+            "2.1": {
+                "ratios": "v2_ratios",
+                "name": "图片 2.1",
+                "model_req_key": "high_aes_general_v21_L:general_v2.1_L",
+                "description": "平面绘感强，可生成文字海报",
+                "features": ["新模型", "默认场景", "人脸交换", "背景绘画", "文本到图像生成", "ETTA", "角色生成"]
+            },
+            "2.0p": {
+                "ratios": "v2_ratios",
+                "name": "图片 2.0 Pro",
+                "model_req_key": "high_aes_general_v20_L:general_v2.0_L",
+                "description": "极具想象力，擅长写真摄影",
+                "features": ["默认场景", "文本到图像生成", "人脸交换", "背景绘画", "限时折扣", "字节编辑", "风格参考"]
+            },
+            "2.0": {
+                "ratios": "v2_ratios",
+                "name": "图片 2.0",
+                "model_req_key": "high_aes_general_v20:general_v2.0",
+                "description": "文字遵循高，支持图片参考能力",
+                "features": ["默认场景", "文本到图像生成", "人脸交换", "背景绘画", "Canny边缘检测", "深度图", "姿态估计", "风格参考", "IP保持"]
+            }
+        },
+        "default_model": "3.1"
+    },
+    "generation": {
+        "max_retries": 3,
+        "retry_delay": 2,
+        "timeout": 30
+    },
+    "api": {
+        "base_url": "https://jimeng.jianying.com",
+        "aid": 513695,
+        "app_version": "6.6.0",
+        "request_delay": 1.0
+    },
+    "storage": {
+        "retention_days": 7
+    },
+    "video_api": {
+        "sign": "",
+        "cookie": "",
+        "msToken": "",
+        "a_bogus": "",
+        "web_id": "",
+        "video_params": {
+            "aspect_ratio": "16:9",
+            "fps": 24,
+            "duration_ms": 5000,
+            "video_mode": 2
+        }
+    },
+    "video_ratios": {
+        "21:9": {"width": 1195, "height": 512},
+        "16:9": {"width": 1024, "height": 576},
+        "4:3": {"width": 1024, "height": 768},
+        "1:1": {"width": 1024, "height": 1024},
+        "3:4": {"width": 768, "height": 1024},
+        "9:16": {"width": 576, "height": 1024}
+    },
+    "default_video_ratio": "9:16"
+} 
