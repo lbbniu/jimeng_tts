@@ -9,11 +9,15 @@ import random
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Any
 import sys
 import shutil
 import pymediainfo
 from dataclasses import dataclass
+from enum import Enum
+from .image_selection_gui import ImageSelectionGUI, SceneInfo
+import tkinter as tk
+from tkinter import ttk
 
 # 添加本地 pyJianYingDraft 模块路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pyJianYingDraft'))
@@ -26,13 +30,17 @@ from pyJianYingDraft.metadata import OutroType, VideoSceneEffectType
 logger = logging.getLogger(__name__)
 
 
+class ImageSelectionStrategy(Enum):
+    """图片选择策略"""
+    RANDOM = "random"           # 随机选择
+    MANUAL = "manual"           # 人工选择（GUI界面）
+
+
 @dataclass
 class AudioSubtitlePair:
     """音频和字幕文件对"""
     audio_file: str
     subtitle_file: str
-
-
 class VideoGenerator:
     """视频生成器 - 使用 pyJianYingDraft 生成剪映草稿"""
     
@@ -50,7 +58,46 @@ class VideoGenerator:
             self.output_dir = Path(output_dir)
         
         self.output_dir.mkdir(exist_ok=True)
+        # 初始化GUI选择器
+        self.gui_selector = ImageSelectionGUI()
         logger.info(f"视频生成器初始化完成，输出目录: {self.output_dir}")
+    
+    def select_best_image(self, image_files: List[str], strategy: ImageSelectionStrategy = ImageSelectionStrategy.RANDOM, scene_name: str = "") -> str:
+        """
+        根据策略选择最合适的图片
+        
+        Args:
+            image_files: 图片文件列表
+            strategy: 选择策略
+            scene_name: 场景名称
+            
+        Returns:
+            选中的图片文件路径
+        """
+        if not image_files:
+            raise ValueError("图片文件列表为空")
+        
+        if len(image_files) == 1:
+            return image_files[0]
+        
+        try:
+            if strategy == ImageSelectionStrategy.RANDOM:
+                selected = random.choice(image_files)
+                logger.info(f"随机选择图片: {selected}")
+                return selected
+            
+            elif strategy == ImageSelectionStrategy.MANUAL:
+                # 人工选择模式，这里应该由外部调用GUI
+                logger.warning("人工选择模式应该在外部处理")
+                return random.choice(image_files)
+            
+            else:
+                logger.warning(f"未知的选择策略: {strategy}，使用随机选择")
+                return random.choice(image_files)
+                
+        except Exception as e:
+            logger.error(f"图片选择失败: {e}，使用随机选择")
+            return random.choice(image_files)
     
     def get_file_creation_time(self, file_path: str) -> int:
         """
@@ -180,7 +227,8 @@ class VideoGenerator:
                           output_name: str = "video_draft",
                           video_width: int = 1080,
                           video_height: int = 1920,
-                          random_seed: int | None = None) -> str:
+                          random_seed: int | None = None,
+                          image_selection_strategy: ImageSelectionStrategy = ImageSelectionStrategy.RANDOM) -> str:
         """
         创建视频草稿
         
@@ -190,6 +238,7 @@ class VideoGenerator:
             video_width: 视频宽度
             video_height: 视频高度
             random_seed: 随机种子
+            image_selection_strategy: 图片选择策略
             
         Returns:
             生成的草稿文件路径
@@ -203,6 +252,22 @@ class VideoGenerator:
         if not scene_files or not audio_subtitle_files:
             logger.error("未找到足够的素材文件")
             return ""
+        
+        # 如果是人工选择模式，需要加载飞镜配置并显示GUI
+        selected_images = {}
+        if image_selection_strategy == ImageSelectionStrategy.MANUAL:
+            # 尝试加载飞镜配置
+            feijing_config = self._load_feijing_config(scene_dir)
+            if not feijing_config:
+                logger.warning("无法加载飞镜配置，使用随机选择")
+                return ""
+            # 构建场景信息
+            scenes = self._build_scene_info(scene_files, audio_subtitle_files, feijing_config)
+            # 显示GUI选择界面
+            selected_images = self.gui_selector.show_selection_dialog(scenes)
+            if not selected_images:
+                logger.warning("用户取消了选择，使用随机选择")
+                return ""
         
         try:
             # 生成草稿文件夹路径
@@ -234,9 +299,15 @@ class VideoGenerator:
                     logger.warning(f"场景 {scene_name} 缺少音频或字幕文件，跳过")
                     continue
                 
-                # 随机选择一张图片
+                # 选择图片
                 image_files = scene_files[scene_name]
-                selected_image = random.choice(image_files)
+                if selected_images and scene_name in selected_images:
+                    # 使用人工选择的图片
+                    selected_image = selected_images[scene_name]
+                    logger.info(f"使用人工选择的图片: {selected_image}")
+                else:
+                    # 使用策略选择的图片
+                    selected_image = self.select_best_image(image_files, image_selection_strategy, scene_name)
                 
                 # 获取音频和字幕文件
                 audio_subtitle_pair = audio_subtitle_files[scene_name]
@@ -294,7 +365,8 @@ class VideoGenerator:
                                        output_name: str | None = None,
                                        video_width: int = 1080,
                                        video_height: int = 1920,
-                                       random_seed: int | None = None) -> str:
+                                       random_seed: int | None = None,
+                                       image_selection_strategy: ImageSelectionStrategy = ImageSelectionStrategy.RANDOM) -> str:
         """
         从飞镜生成的素材创建视频草稿
         
@@ -304,6 +376,7 @@ class VideoGenerator:
             video_width: 视频宽度
             video_height: 视频高度
             random_seed: 随机种子
+            image_selection_strategy: 图片选择策略
             
         Returns:
             生成的草稿文件路径
@@ -316,7 +389,8 @@ class VideoGenerator:
             output_name=output_name,
             video_width=video_width,
             video_height=video_height,
-            random_seed=random_seed
+            random_seed=random_seed,
+            image_selection_strategy=image_selection_strategy
         )
 
     def _save_draft(self, script, output_path: str, scene_files: Dict[str, List[str]], audio_subtitle_files: Dict[str, AudioSubtitlePair]) -> None:
@@ -841,6 +915,123 @@ class VideoGenerator:
             
         except Exception as e:
             logger.error(f"生成虚拟存储文件失败: {e}")
+
+    def _load_feijing_config(self, scene_dir: str) -> List[Dict[str, Any]] | None:
+        """
+        尝试加载飞镜配置文件
+        
+        Args:
+            scene_dir: 场景目录路径
+            
+        Returns:
+            飞镜配置列表或None
+        """
+        try:
+            # 从场景目录名推断飞镜配置文件名
+            scene_dir_name = os.path.basename(scene_dir)
+            
+            # 尝试多个可能的路径
+            possible_paths = [
+                # 1. 在项目根目录查找对应的飞镜配置文件
+                os.path.join(os.path.dirname(os.path.dirname(scene_dir)), f"{scene_dir_name}.json"),
+                # 2. 在场景目录的上级目录查找feijing.json
+                os.path.join(os.path.dirname(scene_dir), "feijing.json"),
+                # 3. 在场景目录查找feijing.json
+                os.path.join(scene_dir, "feijing.json"),
+                # 4. 在项目根目录查找feijing.json
+                os.path.join(os.path.dirname(os.path.dirname(scene_dir)), "feijing.json")
+            ]
+            
+            for feijing_path in possible_paths:
+                if os.path.exists(feijing_path):
+                    with open(feijing_path, "r", encoding='utf-8') as f:
+                        config = json.load(f)
+                    logger.info(f"成功加载飞镜配置: {feijing_path}")
+                    return config
+            
+            # 如果都没找到，记录所有尝试过的路径
+            logger.warning(f"未找到飞镜配置文件，尝试过的路径:")
+            for path in possible_paths:
+                logger.warning(f"  - {path}")
+            return None
+                
+        except Exception as e:
+            logger.error(f"加载飞镜配置失败: {e}")
+            return None
+    
+    def _build_scene_info(self, scene_files: Dict[str, List[str]], 
+                         audio_subtitle_files: Dict[str, AudioSubtitlePair],
+                         feijing_config: List[Dict[str, Any]]) -> List[SceneInfo]:
+        """
+        构建场景信息列表
+        
+        Args:
+            scene_files: 场景文件字典
+            audio_subtitle_files: 音频字幕文件字典
+            feijing_config: 飞镜配置
+            
+        Returns:
+            场景信息列表
+        """
+        scenes = []
+        
+        # 为每个场景构建信息
+        for scene_name, image_files in scene_files.items():
+            if scene_name not in audio_subtitle_files:
+                continue
+            
+            audio_subtitle_pair = audio_subtitle_files[scene_name]
+            
+            # 尝试从飞镜配置中找到对应的信息
+            original_text = ""
+            prompt = ""
+            
+            # 通过场景名匹配（假设场景名是分镜编号）
+            for feijing_item in feijing_config:
+                if feijing_item.get('编号', '') == scene_name:
+                    original_text = feijing_item.get('原文', '')
+                    prompt = feijing_item.get('提示词', '')
+                    break
+            
+            # 如果没找到，使用默认值
+            if not original_text:
+                original_text = f"分镜 {scene_name} 的原文"
+            if not prompt:
+                prompt = f"分镜 {scene_name} 的提示词"
+            
+            scene_info = SceneInfo(
+                scene_name=scene_name,
+                original_text=original_text,
+                prompt=prompt,
+                image_files=image_files,
+                audio_file=audio_subtitle_pair.audio_file,
+                subtitle_file=audio_subtitle_pair.subtitle_file
+            )
+            scenes.append(scene_info)
+        
+        # 按场景名后的编号排序
+        def extract_scene_number(scene_name):
+            """提取场景名中的编号"""
+            try:
+                # 假设场景名格式为 "分镜X" 或 "分镜XX"
+                if "分镜" in scene_name:
+                    number_str = scene_name.replace("分镜", "")
+                    return int(number_str)
+                else:
+                    # 如果不是标准格式，尝试提取数字
+                    import re
+                    numbers = re.findall(r'\d+', scene_name)
+                    if numbers:
+                        return int(numbers[0])
+                    else:
+                        return 0
+            except (ValueError, AttributeError):
+                return 0
+        
+        scenes.sort(key=lambda x: extract_scene_number(x.scene_name))
+        
+        logger.info(f"构建了 {len(scenes)} 个场景信息")
+        return scenes
 
 
 def main():

@@ -390,7 +390,7 @@ class JimengPlugin:
             base_dir = os.path.dirname(__file__)
             full_filename = os.path.join(base_dir, "downloads", self.download_subdir, f"{filename}.mp3")
             if os.path.exists(full_filename):
-                # logger.info(f"[JimengPlugin] {full_filename} 存在，跳过音频生成")
+                success_count += 1
                 continue
                 
             try:
@@ -433,8 +433,8 @@ class JimengPlugin:
                 item_mapping[len(prompts) - 1] = item
         
         if not prompts:
-            logger.warning("[JimengPlugin] 没有找到有效的提示词")
-            return False
+            logger.warning("[JimengPlugin] 图片已经生成完成")
+            return True
         
         logger.info(f"[JimengPlugin] 开始批量处理 {len(prompts)} 个提示词...")
         logger.info(f"[JimengPlugin] 使用模型: {model}, 比例: {ratio}, 超时: {timeout}秒")
@@ -478,7 +478,8 @@ class JimengPlugin:
                            output_name: str | None = None,
                            video_width: int = 1080,
                            video_height: int = 1920,
-                           random_seed: int | None = None) -> str:
+                           random_seed: int | None = None,
+                           image_selection_strategy: str = "best_quality") -> str:
         """生成视频草稿
         
         Args:
@@ -486,6 +487,7 @@ class JimengPlugin:
             video_width: 视频宽度
             video_height: 视频高度
             random_seed: 随机种子
+            image_selection_strategy: 图片选择策略（random, manual）
             
         Returns:
             生成的草稿文件路径
@@ -505,13 +507,22 @@ class JimengPlugin:
             
             logger.info(f"[JimengPlugin] 开始生成视频草稿，素材目录: {scene_dir}")
             
+            # 将字符串策略转换为枚举
+            from module.video_generator import ImageSelectionStrategy
+            strategy_map = {
+                "random": ImageSelectionStrategy.RANDOM,
+                "manual": ImageSelectionStrategy.MANUAL
+            }
+            strategy = strategy_map.get(image_selection_strategy, ImageSelectionStrategy.RANDOM)
+            
             # 生成视频草稿
             draft_file = self.video_generator.create_video_draft_from_feijing(
                 feijing_dir=scene_dir,
                 output_name=output_name,
                 video_width=video_width,
                 video_height=video_height,
-                random_seed=random_seed
+                random_seed=random_seed,
+                image_selection_strategy=strategy
             )
             
             if draft_file:
@@ -575,7 +586,13 @@ def parse_arguments():
   python jimeng.py --feijing custom.json    # 使用自定义飞镜配置文件
   python jimeng.py --config config.json --feijing feijing.json  # 同时指定配置文件和飞镜文件
   python jimeng.py --video --video-width 1920 --video-height 1080  # 生成横屏视频草稿
+  python jimeng.py --video --image-strategy random  # 使用随机选择策略
+  python jimeng.py --video --image-strategy manual  # 使用人工选择策略（GUI界面）
   python jimeng.py                          # 默认执行TTS和批量生成
+
+图片选择策略说明:
+  random: 随机选择图片
+  manual: 人工选择（显示GUI界面，可选择每个分镜的图片）
         """
     )
     
@@ -669,6 +686,14 @@ def parse_arguments():
         help='视频生成随机种子'
     )
     
+    parser.add_argument(
+        '--image-strategy', 
+        type=str,
+        default='manual',
+        choices=['random', 'manual'],
+        help='图片选择策略 (默认: manual)'
+    )
+    
     return parser.parse_args()
 
 async def main():
@@ -726,7 +751,8 @@ async def main():
             draft_file = jimeng.generate_video_draft(
                 video_width=args.video_width,
                 video_height=args.video_height,
-                random_seed=args.video_seed
+                random_seed=args.video_seed,
+                image_selection_strategy=args.image_strategy
             )
             
             if draft_file:
