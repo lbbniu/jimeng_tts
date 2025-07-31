@@ -426,14 +426,14 @@ class JimengPlugin:
             prompt = item.get('提示词', '').strip()
             number = item.get('编号', '').strip()
             first_image_file = f"{number}_0.jpeg"
-            if os.path.exists(os.path.join(self.image_processor.temp_dir, first_image_file)):
+            if os.path.exists(self.image_processor.get_file_path(first_image_file)):
                 continue
             if prompt:
                 prompts.append(prompt)
                 item_mapping[len(prompts) - 1] = item
         
         if not prompts:
-            logger.warning("[JimengPlugin] 图片已经生成完成")
+            logger.info("[JimengPlugin] 图片已经生成完成")
             return True
         
         logger.info(f"[JimengPlugin] 开始批量处理 {len(prompts)} 个提示词...")
