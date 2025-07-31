@@ -783,6 +783,19 @@ async def main():
             else:
                 logger.error("[Main] 批量图片生成失败")
                 exit(1)
+
+            logger.info("[Main] 开始生成视频草稿...")
+            draft_file = jimeng.generate_video_draft(
+                video_width=args.video_width,
+                video_height=args.video_height,
+                random_seed=args.video_seed,
+                image_selection_strategy=args.image_strategy
+            )
+            if draft_file:
+                logger.info(f"[Main] 视频草稿生成成功: {draft_file}")
+            else:
+                logger.error("[Main] 视频草稿生成失败")
+                exit(1)
             
     except KeyboardInterrupt:
         logger.info("[Main] 用户中断程序")
