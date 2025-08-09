@@ -1,7 +1,9 @@
 import json
 import os
 import time
+import asyncio
 import argparse
+import sys
 from typing import Dict, List, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -23,6 +25,10 @@ from module import (
 from dotenv import load_dotenv
 load_dotenv()
 
+# 确保日志目录存在，并使用模块目录的绝对路径
+BASE_DIR = os.path.dirname(__file__)
+os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
+
 # 配置日志格式和处理器
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +36,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('logs/jimeng.log', encoding='utf-8')
+        logging.FileHandler(os.path.join(BASE_DIR, 'logs', 'jimeng.log'), encoding='utf-8')
     ]
 )
 
@@ -155,7 +161,7 @@ class JimengPlugin:
         # 重试机制
         for attempt in range(self.generation_config.max_retries):
             try:
-                submit_id = self.api_client.generate_image(prompt, model, ratio)
+                submit_id = await asyncio.to_thread(self.api_client.generate_image, prompt, model, ratio)
                 if submit_id:
                     # 存储图片信息
                     await self.image_storage.store_image(
@@ -176,9 +182,9 @@ class JimengPlugin:
             except Exception as e:
                 logger.error(f"[JimengPlugin] 图片生成异常 (第 {attempt + 1} 次): {e}")
             
-            # 等待重试
+            # 等待重试（使用非阻塞睡眠）
             if attempt < self.generation_config.max_retries - 1:
-                time.sleep(self.generation_config.retry_delay)
+                await asyncio.sleep(self.generation_config.retry_delay)
         
         logger.error(f"[JimengPlugin] 图片生成失败，已重试 {self.generation_config.max_retries} 次")
         return None
@@ -265,7 +271,7 @@ class JimengPlugin:
             
             for submit_id in remaining_ids:
                 try:
-                    image_urls = self.api_client.get_generated_images(submit_id)
+                    image_urls = await asyncio.to_thread(self.api_client.get_generated_images, submit_id)
                     if image_urls is not None:
                         results[submit_id] = image_urls
                         completed_ids.append(submit_id)
@@ -277,12 +283,13 @@ class JimengPlugin:
                 except Exception as e:
                     logger.error(f"[JimengPlugin] 检查任务 {submit_id} 状态失败: {e}")
             
-            # 移除已完成的任务
-            for submit_id in completed_ids:
-                remaining_ids.remove(submit_id)
+            # 移除已完成的任务（避免 O(n^2) 删除）
+            if completed_ids:
+                completed_set = set(completed_ids)
+                remaining_ids = [sid for sid in remaining_ids if sid not in completed_set]
             
             if remaining_ids:
-                time.sleep(2)  # 等待2秒后再次检查
+                await asyncio.sleep(2)  # 等待2秒后再次检查
         
         # 记录未完成的任务
         if remaining_ids:
@@ -327,9 +334,9 @@ class JimengPlugin:
             filename = f"分镜{index+1}"
             filename = feijing_item.get('编号', filename)
             if submit_id:
-                image_urls = self.api_client.get_generated_images(submit_id)
+                image_urls = await asyncio.to_thread(self.api_client.get_generated_images, submit_id)
                 if image_urls is not None:
-                    self.image_processor.download_image(filename, image_urls)
+                    await asyncio.to_thread(self.image_processor.download_image, filename, image_urls)
                     logger.info(f"[JimengPlugin] {submit_id} 已下载图片: {filename}")
     
     def text_to_speech(self, filename: str, text: str, generate_srt: bool = True) -> bool:
@@ -465,7 +472,7 @@ class JimengPlugin:
                     if item:
                         number = item.get('编号', f'img_{i}')
                         image_urls = results[task.result]
-                        self.image_processor.download_image(number, image_urls)
+                        await asyncio.to_thread(self.image_processor.download_image, number, image_urls)
                         download_count += 1
                         logger.info(f"[JimengPlugin] 已下载图片: {number} 图片数量: {len(image_urls)}")
                 except Exception as e:
@@ -479,7 +486,7 @@ class JimengPlugin:
                            video_width: int = 1080,
                            video_height: int = 1920,
                            random_seed: int | None = None,
-                           image_selection_strategy: str = "best_quality") -> str:
+                           image_selection_strategy: str = "manual") -> str:
         """生成视频草稿
         
         Args:
@@ -513,7 +520,7 @@ class JimengPlugin:
                 "random": ImageSelectionStrategy.RANDOM,
                 "manual": ImageSelectionStrategy.MANUAL
             }
-            strategy = strategy_map.get(image_selection_strategy, ImageSelectionStrategy.RANDOM)
+            strategy = strategy_map.get(image_selection_strategy, ImageSelectionStrategy.MANUAL)
             
             # 生成视频草稿
             draft_file = self.video_generator.create_video_draft_from_feijing(
@@ -743,7 +750,7 @@ async def main():
                 logger.info("[Main] 批量图片生成成功完成")
             else:
                 logger.error("[Main] 批量图片生成失败")
-                exit(1)
+                sys.exit(1)
         
         # 生成视频草稿
         if args.video:
@@ -759,7 +766,7 @@ async def main():
                 logger.info(f"[Main] 视频草稿生成成功: {draft_file}")
             else:
                 logger.error("[Main] 视频草稿生成失败")
-                exit(1)
+                sys.exit(1)
         
         # 如果没有指定任何操作，默认执行TTS和批量生成
         if not any([args.stats, args.download, args.tts, args.images, args.video]):
@@ -782,7 +789,7 @@ async def main():
                 logger.info("[Main] 批量图片生成成功完成")
             else:
                 logger.error("[Main] 批量图片生成失败")
-                exit(1)
+                sys.exit(1)
 
             logger.info("[Main] 开始生成视频草稿...")
             draft_file = jimeng.generate_video_draft(
@@ -795,13 +802,13 @@ async def main():
                 logger.info(f"[Main] 视频草稿生成成功: {draft_file}")
             else:
                 logger.error("[Main] 视频草稿生成失败")
-                exit(1)
+                sys.exit(1)
             
     except KeyboardInterrupt:
         logger.info("[Main] 用户中断程序")
     except Exception as e:
         logger.error(f"[Main] 程序异常: {e}")
-        exit(1)
+        sys.exit(1)
     finally:
         # 清理资源
         await jimeng.cleanup()
@@ -809,7 +816,14 @@ async def main():
 
 def run_main():
     """运行主函数的包装器"""
-    import asyncio
+    # Windows 下设置 Selector 策略以提高兼容性
+    if sys.platform.startswith("win"):
+        policy_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+        if policy_cls is not None:
+            try:
+                asyncio.set_event_loop_policy(policy_cls())
+            except Exception:
+                pass
     asyncio.run(main())
 
 if __name__ == "__main__":
